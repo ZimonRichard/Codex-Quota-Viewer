@@ -74,4 +74,43 @@ describe("CodexSessionIndexRepository", () => {
     expect(rename).toHaveBeenCalledTimes(1);
     expect(rename).toHaveBeenCalledWith(tempPath, finalPath);
   });
+
+  test("reads duplicate session_index rows by newest updated_at instead of line order", async () => {
+    const mkdir = vi.fn(async () => undefined);
+    const readFile = vi.fn(async () =>
+      [
+        JSON.stringify({
+          id: "session-alpha",
+          thread_name: "New title",
+          updated_at: "2026-03-30T10:16:37.087Z",
+        }),
+        JSON.stringify({
+          id: "session-alpha",
+          thread_name: "Old title",
+          updated_at: "2026-03-29T10:16:37.087Z",
+        }),
+        "",
+      ].join("\n"),
+    );
+    const writeFile = vi.fn(async () => undefined);
+    const rename = vi.fn(async () => undefined);
+
+    vi.doMock("node:fs/promises", () => ({
+      mkdir,
+      readFile,
+      writeFile,
+      rename,
+    }));
+
+    const { CodexSessionIndexRepository } = await import(
+      "../../src/server/services/codex-session-index-repository"
+    );
+    const repository = new CodexSessionIndexRepository("/tmp/codex-home");
+
+    await expect(repository.getEntry("session-alpha")).resolves.toEqual({
+      id: "session-alpha",
+      threadName: "New title",
+      updatedAt: "2026-03-30T10:16:37.087Z",
+    });
+  });
 });

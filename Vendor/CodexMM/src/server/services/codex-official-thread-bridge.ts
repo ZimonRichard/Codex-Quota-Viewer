@@ -31,7 +31,7 @@ export class CodexOfficialThreadBridge {
   async inspectSession(record: SessionRecord): Promise<SessionOfficialState> {
     const thread = this.threads.getThread(record.id);
     const indexEntry = await this.sessionIndex.getEntry(record.id);
-    const desired = buildDesiredProjection(record);
+    const desired = buildDesiredProjection(record, thread, indexEntry);
 
     if (!desired) {
       const issueCodes = [
@@ -83,7 +83,9 @@ export class CodexOfficialThreadBridge {
     const stats = createEmptyStats();
 
     for (const record of selectedRecords) {
-      const desired = buildDesiredProjection(record);
+      const currentThread = this.threads.getThread(record.id);
+      const currentIndexEntry = sessionIndexMap.get(record.id) ?? null;
+      const desired = buildDesiredProjection(record, currentThread, currentIndexEntry);
 
       if (!desired) {
         const removedThread = this.threads.deleteThread(record.id);
@@ -100,7 +102,6 @@ export class CodexOfficialThreadBridge {
         continue;
       }
 
-      const currentThread = this.threads.getThread(record.id);
       const nextThread = await this.buildThreadUpsert(record, desired, currentThread);
       const threadResult = this.threads.upsertThread(nextThread);
       const sessionIndexResult = upsertSessionIndexEntry(sessionIndexMap, {
@@ -228,7 +229,11 @@ type DesiredProjection = {
   updatedAt: string;
 };
 
-function buildDesiredProjection(record: SessionRecord): DesiredProjection | null {
+function buildDesiredProjection(
+  record: SessionRecord,
+  existingThread?: CodexThreadRecord | null,
+  existingIndexEntry?: CodexSessionIndexEntry | null,
+): DesiredProjection | null {
   if (record.status === "restorable") {
     return null;
   }
@@ -243,9 +248,63 @@ function buildDesiredProjection(record: SessionRecord): DesiredProjection | null
     id: record.id,
     rolloutPath,
     archived: record.status === "active" ? 0 : 1,
-    threadName: buildThreadName(record),
-    updatedAt: record.updatedAt,
+    threadName: resolveDesiredThreadName(record, existingThread, existingIndexEntry),
+    updatedAt: resolveDesiredUpdatedAt(record, existingThread, existingIndexEntry),
   };
+}
+
+function resolveDesiredThreadName(
+  record: SessionRecord,
+  existingThread?: CodexThreadRecord | null,
+  existingIndexEntry?: CodexSessionIndexEntry | null,
+) {
+  const defaultName = buildThreadName(record);
+  const existingTitle = existingThread?.title.trim() ?? "";
+  const indexTitle = existingIndexEntry?.threadName.trim() ?? "";
+  const existingFirstUserMessage = existingThread?.firstUserMessage.trim() ?? "";
+
+  if (
+    existingTitle.length > 0 &&
+    existingTitle !== defaultName &&
+    existingTitle !== existingFirstUserMessage &&
+    (existingTitle === indexTitle || indexTitle === defaultName)
+  ) {
+    return existingTitle;
+  }
+
+  if (
+    indexTitle.length > 0 &&
+    indexTitle !== defaultName &&
+    indexTitle !== existingFirstUserMessage &&
+    existingTitle === defaultName
+  ) {
+    return indexTitle;
+  }
+
+  return defaultName;
+}
+
+function resolveDesiredUpdatedAt(
+  record: SessionRecord,
+  existingThread?: CodexThreadRecord | null,
+  existingIndexEntry?: CodexSessionIndexEntry | null,
+) {
+  if (Number.isFinite(Date.parse(record.updatedAt))) {
+    return record.updatedAt;
+  }
+
+  const candidates = [
+    existingIndexEntry?.updatedAt,
+    existingThread ? new Date(existingThread.updatedAt * 1000).toISOString() : null,
+  ].filter((value): value is string => Boolean(value));
+
+  if (candidates.length === 0) {
+    return record.startedAt;
+  }
+
+  return candidates.reduce((latest, candidate) =>
+    Date.parse(candidate) > Date.parse(latest) ? candidate : latest,
+  );
 }
 
 function buildThreadName(record: Pick<SessionRecord, "id" | "userPromptExcerpt" | "latestAgentMessageExcerpt">) {

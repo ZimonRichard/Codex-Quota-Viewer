@@ -92,7 +92,7 @@ func vaultQuotaCacheStoreLoadsLegacyRecordsWithoutFailureDisposition() throws {
 }
 
 @Test
-func quotaOverviewStatePrioritizesAvailableProfilesAndLimitsOverviewToFiveRows() {
+func quotaOverviewStateOrdersBoardByCurrentThenRecentUsageAndLimitsOverviewToFiveRows() {
     withExclusiveAppLocalization {
         AppLocalization.setPreferredLanguage(.en, preferredLanguages: ["en-US"])
         let now = Date(timeIntervalSince1970: 1_800_000_000)
@@ -178,8 +178,58 @@ func quotaOverviewStatePrioritizesAvailableProfilesAndLimitsOverviewToFiveRows()
         #expect(state.chatGPTCount == 8)
         #expect(state.apiCount == 1)
         #expect(state.boardTiles.count == 5)
-        #expect(state.boardTiles.map { $0.profile.id } == ["current", "healthy-a", "healthy-b", "healthy-hidden", "exhausted"])
+        #expect(state.boardTiles.map { $0.profile.id } == ["current", "needs-login", "expired", "exhausted", "stale"])
     }
+}
+
+@Test
+func quotaOverviewStateKeepsCurrentAccountFirstBeforeMoreRecentProfiles() {
+    let now = Date(timeIntervalSince1970: 1_800_000_020)
+    let currentOfficial = makeTestProviderProfile(
+        id: "official-current",
+        displayName: "official@example.com",
+        authMode: .chatgpt,
+        snapshot: makeTestSnapshot(
+            email: "official@example.com",
+            primaryRemaining: 82,
+            secondaryRemaining: 71,
+            fetchedAt: now
+        ),
+        isCurrent: true,
+        lastUsedAt: now.addingTimeInterval(-120)
+    )
+    let recentAPI = makeTestProviderProfile(
+        id: "svip",
+        displayName: "svip",
+        authMode: .apiKey,
+        snapshot: makeTestAPISnapshot(
+            primaryRemaining: 51,
+            secondaryRemaining: 55,
+            fetchedAt: now
+        ),
+        lastUsedAt: now
+    )
+    let olderOfficial = makeTestProviderProfile(
+        id: "older",
+        displayName: "older@example.com",
+        authMode: .chatgpt,
+        snapshot: makeTestSnapshot(
+            email: "older@example.com",
+            primaryRemaining: 70,
+            secondaryRemaining: 60,
+            fetchedAt: now
+        ),
+        lastUsedAt: now.addingTimeInterval(-240)
+    )
+
+    let state = buildQuotaOverviewState(
+        currentProfile: currentOfficial,
+        vaultProfiles: [recentAPI, olderOfficial],
+        refreshIntervalPreset: .fiveMinutes,
+        now: now
+    )
+
+    #expect(state.boardTiles.map(\.profile.id) == ["official-current", "svip", "older"])
 }
 
 @Test
@@ -232,6 +282,179 @@ func quotaOverviewStateBuildsAllAccountsSections() {
         #expect(state.sections[0].profiles.map { $0.id } == ["current", "healthy"])
         #expect(state.sections[1].profiles.map { $0.id } == ["exhausted"])
         #expect(state.sections[2].profiles.map { $0.id } == ["api"])
+    }
+}
+
+@Test
+func quotaOverviewStateUsesCPAQuotaForCurrentAPIAccount() {
+    withExclusiveAppLocalization {
+        AppLocalization.setPreferredLanguage(.en, preferredLanguages: ["en-US"])
+        let now = Date(timeIntervalSince1970: 1_800_000_140)
+        let apiRuntime = makeTestRuntimeMaterial(
+            id: "local-cpa-api",
+            authMode: .apiKey,
+            apiBaseURL: "http://127.0.0.1:3001/v1",
+            model: "gpt-5.5"
+        )
+        let current = makeTestProviderProfile(
+            id: stableAccountRecordID(for: apiRuntime),
+            displayName: "svip",
+            authMode: .apiKey,
+            snapshot: CodexSnapshot(
+                account: CodexAccount(type: "apiKey", email: nil, planType: nil),
+                rateLimits: RateLimitSnapshot(
+                    limitId: nil,
+                    limitName: nil,
+                    primary: nil,
+                    secondary: nil,
+                    planType: nil
+                ),
+                fetchedAt: now
+            ),
+            source: .current,
+            isCurrent: true,
+            runtimeMaterial: apiRuntime,
+            quotaFetchedAt: now
+        )
+        let savedWithCPAQuota = makeTestProviderProfile(
+            id: stableAccountRecordID(for: apiRuntime),
+            displayName: "svip",
+            authMode: .apiKey,
+            snapshot: makeTestAPISnapshot(
+                primaryRemaining: 23,
+                secondaryRemaining: 85,
+                fetchedAt: now.addingTimeInterval(5)
+            ),
+            runtimeMaterial: apiRuntime,
+            quotaFetchedAt: now.addingTimeInterval(5)
+        )
+
+        let state = buildQuotaOverviewState(
+            currentProfile: current,
+            vaultProfiles: [savedWithCPAQuota],
+            refreshIntervalPreset: .fiveMinutes,
+            now: now
+        )
+
+        #expect(state.chatGPTCount == 0)
+        #expect(state.apiCount == 1)
+        #expect(state.boardTiles.map { $0.profile.id } == [current.id])
+        #expect(state.boardTiles.first?.primaryText == "5h 23%")
+        #expect(state.boardTiles.first?.secondaryText == "1w 85%")
+        #expect(state.sections.map(\.title) == ["API Accounts"])
+        #expect(state.sections.first?.profiles.first?.isCurrent == true)
+        #expect(
+            allAccountsMenuText(
+                for: state.sections.first!.profiles.first!,
+                refreshIntervalPreset: .fiveMinutes,
+                now: now
+            ) == "svip · 5h 23% · 1w 85%"
+        )
+    }
+}
+
+@Test
+func quotaOverviewStateKeepsCPAPoolMembersNestedBelowAPIParent() {
+    withExclusiveAppLocalization {
+        AppLocalization.setPreferredLanguage(.en, preferredLanguages: ["en-US"])
+        let now = Date(timeIntervalSince1970: 1_800_000_160)
+        let current = makeTestProviderProfile(
+            id: "current",
+            displayName: "current@example.com",
+            authMode: .chatgpt,
+            snapshot: makeTestSnapshot(
+                email: "current@example.com",
+                primaryRemaining: 81,
+                secondaryRemaining: 79,
+                fetchedAt: now
+            ),
+            isCurrent: true,
+            lastUsedAt: now
+        )
+        let apiParent = makeTestProviderProfile(
+            id: "api-parent",
+            displayName: "svip",
+            authMode: .apiKey,
+            snapshot: makeTestAPISnapshot(
+                primaryRemaining: 51,
+                secondaryRemaining: 8,
+                fetchedAt: now
+            ),
+            lastUsedAt: now.addingTimeInterval(-10)
+        )
+        let exhaustedMember = makeTestProviderProfile(
+            id: "api-parent::cpa::codex-plus-1",
+            displayName: "codex_plus_1",
+            authMode: .apiKey,
+            snapshot: makeTestAPISnapshot(
+                primaryRemaining: 0,
+                secondaryRemaining: 37,
+                fetchedAt: now.addingTimeInterval(-30)
+            ),
+            source: .cpaPoolMember,
+            lastUsedAt: now.addingTimeInterval(-30),
+            cpaPoolParentID: apiParent.id,
+            cpaPoolParentDisplayName: apiParent.displayName,
+            isCPAPoolCurrentRoute: false,
+            cpaPoolReasoningEffort: "xhigh",
+            cpaPoolStatusCode: 429
+        )
+        let routedMember = makeTestProviderProfile(
+            id: "api-parent::cpa::codex-plus-2",
+            displayName: "codex_plus_2",
+            authMode: .apiKey,
+            snapshot: makeTestAPISnapshot(
+                primaryRemaining: 51,
+                secondaryRemaining: 8,
+                fetchedAt: now.addingTimeInterval(-20)
+            ),
+            source: .cpaPoolMember,
+            lastUsedAt: now.addingTimeInterval(-20),
+            cpaPoolParentID: apiParent.id,
+            cpaPoolParentDisplayName: apiParent.displayName,
+            isCPAPoolCurrentRoute: true,
+            cpaPoolReasoningEffort: "xhigh",
+            cpaPoolStatusCode: 200
+        )
+
+        let state = buildQuotaOverviewState(
+            currentProfile: current,
+            vaultProfiles: [apiParent, exhaustedMember, routedMember],
+            refreshIntervalPreset: .fiveMinutes,
+            now: now
+        )
+
+        #expect(state.chatGPTCount == 1)
+        #expect(state.apiCount == 1)
+        #expect(state.boardTiles.map(\.profile.id) == ["current", "api-parent"])
+        #expect(state.sections.map(\.title) == [
+            "Available Quota",
+            "API Accounts",
+        ])
+        #expect(state.sections[1].profiles.map(\.id) == ["api-parent"])
+        let poolMembers = state.cpaPoolMembersByParentID["api-parent"] ?? []
+        #expect(poolMembers.map(\.id) == [
+            "api-parent::cpa::codex-plus-2",
+            "api-parent::cpa::codex-plus-1",
+        ])
+        let primaryReset = makeTestTimeText(Date(timeIntervalSince1970: 1_800_000_360))
+        let secondaryReset = makeTestMonthDayText(Date(timeIntervalSince1970: 1_800_086_400))
+        let routedUpdated = makeTestTimeText(now.addingTimeInterval(-20))
+        let exhaustedUpdated = makeTestTimeText(now.addingTimeInterval(-30))
+        #expect(
+            allAccountsMenuText(
+                for: poolMembers[0],
+                refreshIntervalPreset: .fiveMinutes,
+                now: now
+            ) == "codex_plus_2 · current route · gpt-5.4 · xhigh · HTTP 200 · 5h 51% / \(primaryReset) · 1w 8% / \(secondaryReset) · updated \(routedUpdated)"
+        )
+        #expect(
+            allAccountsMenuText(
+                for: poolMembers[1],
+                refreshIntervalPreset: .fiveMinutes,
+                now: now
+            ) == "codex_plus_1 · standby · gpt-5.4 · xhigh · HTTP 429 · 5h 0% / \(primaryReset) · 1w 37% / \(secondaryReset) · updated \(exhaustedUpdated)"
+        )
     }
 }
 
@@ -794,6 +1017,167 @@ func vaultQuotaRefreshCoordinatorPublishesAPIPlaceholderBatchInSingleUpdate() as
 
 @MainActor
 @Test
+func vaultQuotaRefreshCoordinatorReadsAPIQuotaWhenFetcherIsAvailable() async {
+    let now = Date(timeIntervalSince1970: 1_800_000_360)
+    let apiRuntime = makeTestRuntimeMaterial(
+        id: "cpa-api",
+        authMode: .apiKey,
+        apiBaseURL: "http://127.0.0.1:3001/v1"
+    )
+    let record = makeTestVaultRecord(
+        from: makeTestProviderProfile(
+            id: stableAccountRecordID(for: apiRuntime),
+            displayName: "svip",
+            authMode: .apiKey,
+            snapshot: nil,
+            runtimeMaterial: apiRuntime
+        ),
+        createdAt: now
+    )
+    var requestedDisplayName: String?
+    var requestedTimeout: TimeInterval?
+    let coordinator = VaultQuotaRefreshCoordinator(
+        nowProvider: { now },
+        snapshotFetcher: { _, _ in
+            Issue.record("ChatGPT snapshot fetcher should not run for API quota refreshes.")
+            return makeTestSnapshot(
+                email: "unexpected@example.com",
+                primaryRemaining: 0,
+                secondaryRemaining: 0,
+                fetchedAt: now
+            )
+        },
+        apiQuotaSnapshotFetcher: { _, displayName, timeout in
+            requestedDisplayName = displayName
+            requestedTimeout = timeout
+            let parentSnapshot = makeTestAPISnapshot(
+                primaryRemaining: 31,
+                secondaryRemaining: 88,
+                fetchedAt: now
+            )
+            let poolSnapshot = CPAPoolQuotaSnapshot(
+                id: "codex_plus_2.json",
+                displayName: "codex_plus_2",
+                authFile: "codex_plus_2.json",
+                authIndex: "auth-index",
+                sourceHint: nil,
+                isCurrentRoute: true,
+                snapshot: parentSnapshot,
+                model: "gpt-5.5",
+                reasoningEffort: "xhigh",
+                statusCode: 200,
+                failed: false,
+                requestID: "abcd1234"
+            )
+            return APIQuotaFetchResult(snapshot: parentSnapshot, poolSnapshots: [poolSnapshot])
+        }
+    )
+
+    let finalRecords = await withCheckedContinuation { continuation in
+        coordinator.requestRefresh(
+            .init(
+                currentProfile: nil,
+                vaultAccounts: [record],
+                cachedRecords: [],
+                refreshPolicy: .manualFull
+            )
+        ) { _ in
+        } onComplete: { latest in
+            continuation.resume(returning: latest)
+        }
+    }
+
+    #expect(requestedDisplayName == "svip")
+    #expect(requestedTimeout == VaultQuotaRefreshCoordinator.RefreshPolicy.manualFull.apiQuotaTimeout)
+    #expect(finalRecords.count == 1)
+    #expect(finalRecords.first?.authMode == .apiKey)
+    #expect(finalRecords.first?.snapshot?.account.type == "apiKey")
+    #expect(finalRecords.first?.poolSnapshots.first?.displayName == "codex_plus_2")
+    #expect(finalRecords.first?.poolSnapshots.first?.isCurrentRoute == true)
+    #expect(quotaDisplayWindows(from: finalRecords.first?.snapshot).map(compactWindowSummary) == ["5h31%", "1w88%"])
+}
+
+@MainActor
+@Test
+func vaultQuotaRefreshCoordinatorMarksAPIQuotaFailureWithoutDiscardingCachedPool() async throws {
+    let now = Date(timeIntervalSince1970: 1_800_000_385)
+    let runtime = makeTestRuntimeMaterial(id: "api-quota-failure", authMode: .apiKey)
+    let profile = makeTestProviderProfile(
+        id: "api-account",
+        displayName: "svip",
+        authMode: .apiKey,
+        snapshot: nil,
+        runtimeMaterial: runtime
+    )
+    let record = makeTestVaultRecord(
+        from: profile,
+        source: .manualAPI,
+        createdAt: now
+    )
+    let cachedSnapshot = makeTestAPISnapshot(
+        primaryRemaining: 47,
+        secondaryRemaining: 81,
+        fetchedAt: now.addingTimeInterval(-60)
+    )
+    let cachedPoolSnapshot = CPAPoolQuotaSnapshot(
+        id: "codex_plus_1.json",
+        displayName: "codex_plus_1",
+        authFile: "codex_plus_1.json",
+        authIndex: "auth-index",
+        sourceHint: nil,
+        isCurrentRoute: true,
+        snapshot: cachedSnapshot,
+        model: "gpt-5.5",
+        reasoningEffort: "xhigh",
+        statusCode: 200,
+        failed: false,
+        requestID: "abcd1234"
+    )
+    let cachedRecord = VaultQuotaSnapshotRecord(
+        accountID: record.id,
+        snapshot: cachedSnapshot,
+        poolSnapshots: [cachedPoolSnapshot],
+        healthStatus: .healthy,
+        errorSummary: nil,
+        fetchedAt: cachedSnapshot.fetchedAt,
+        authMode: .apiKey,
+        isCurrent: false
+    )
+    let coordinator = VaultQuotaRefreshCoordinator(
+        nowProvider: { now },
+        snapshotFetcher: { _, _ in
+            Issue.record("ChatGPT snapshot fetcher should not run for API quota refreshes.")
+            return cachedSnapshot
+        },
+        apiQuotaSnapshotFetcher: { _, _, _ in
+            throw CPAQuotaSnapshotError.commandFailed("CPA bridge command failed.")
+        }
+    )
+
+    let finalRecords = await withCheckedContinuation { continuation in
+        coordinator.requestRefresh(
+            .init(
+                currentProfile: nil,
+                vaultAccounts: [record],
+                cachedRecords: [cachedRecord],
+                refreshPolicy: .manualFull
+            )
+        ) { _ in
+        } onComplete: { latest in
+            continuation.resume(returning: latest)
+        }
+    }
+
+    let finalRecord = try #require(finalRecords.first)
+    #expect(finalRecord.healthStatus == .readFailure)
+    #expect(finalRecord.failureDisposition == .transient)
+    #expect(finalRecord.snapshot == cachedSnapshot)
+    #expect(finalRecord.poolSnapshots == [cachedPoolSnapshot])
+    #expect(finalRecord.errorSummary?.contains("CPA bridge") == true)
+}
+
+@MainActor
+@Test
 func vaultQuotaRefreshCoordinatorReportsProgressAcrossReusedPlaceholderAndFetchedAccounts() async {
     let now = Date(timeIntervalSince1970: 1_800_000_380)
     let currentRuntime = makeTestRuntimeMaterial(id: "progress-current", authMode: .chatgpt)
@@ -1177,4 +1561,189 @@ func freeWeeklyOnlyAccountWithQuotaRemainsAvailable() {
         )
         #expect(text == "ai.krisxu@gmail.com · 1w 63%")
     }
+}
+
+@Test
+func quotaWorkPlanKeepsDailyQuotaShareFixedWhenAllHoursHaveSameWeight() {
+    let calendar = Calendar(identifier: .gregorian)
+    let start = Date(timeIntervalSince1970: 1_800_000_000)
+    let reset = start.addingTimeInterval(24 * 60 * 60)
+    let halfway = start.addingTimeInterval(12 * 60 * 60)
+    let allHeavy = QuotaWorkPlanSettings(
+        isEnabled: true,
+        hourlyModes: Array(repeating: .intensive, count: 24)
+    )
+
+    #expect(
+        abs(
+            allHeavy.expectedRemainingPercent(
+                startDate: start,
+                resetDate: reset,
+                now: halfway,
+                calendar: calendar
+            ) - 50
+        ) < 0.001
+    )
+}
+
+@Test
+func quotaWorkPlanUsesStopPointAsDailyTarget() {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+    let start = calendar.date(from: DateComponents(year: 2026, month: 1, day: 1, hour: 0))!
+    let reset = start.addingTimeInterval(24 * 60 * 60)
+    let modes = Array(repeating: QuotaWorkPlanHourMode.paused, count: 12)
+        + Array(repeating: QuotaWorkPlanHourMode.normal, count: 12)
+    let workPlan = QuotaWorkPlanSettings(isEnabled: true, hourlyModes: modes)
+    let duringOffHours = start.addingTimeInterval(6 * 60 * 60)
+    let halfActiveElapsed = start.addingTimeInterval(18 * 60 * 60)
+
+    #expect(
+        abs(
+            workPlan.expectedRemainingPercent(
+                startDate: start,
+                resetDate: reset,
+                now: duringOffHours,
+                calendar: calendar
+            ) - 100
+        ) < 0.001
+    )
+    #expect(
+        abs(
+            workPlan.expectedRemainingPercent(
+                startDate: start,
+                resetDate: reset,
+                now: halfActiveElapsed,
+                calendar: calendar
+            )
+        ) < 0.001
+    )
+}
+
+@Test
+func quotaWorkPlanShowsUpcomingStopTargetDuringWorkPeriod() {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(secondsFromGMT: 8 * 60 * 60)!
+    let reset = calendar.date(from: DateComponents(year: 2026, month: 6, day: 10, hour: 11))!
+    let windowStart = reset.addingTimeInterval(-7 * 24 * 60 * 60)
+    let now = calendar.date(from: DateComponents(year: 2026, month: 6, day: 9, hour: 12))!
+    let workPlan = QuotaWorkPlanSettings(
+        isEnabled: true,
+        offPeriods: [QuotaWorkPlanPeriod(startMinuteOfDay: 2 * 60, endMinuteOfDay: 10 * 60)]
+    )
+    let oneUsableHourBeforeReset = 100.0 / (7.0 * 16.0)
+
+    #expect(
+        abs(
+            workPlan.expectedRemainingPercent(
+                startDate: windowStart,
+                resetDate: reset,
+                now: now,
+                calendar: calendar
+            ) - oneUsableHourBeforeReset
+        ) < 0.001
+    )
+}
+
+@Test
+func quotaWorkPlanFinalOffPeriodBeforeResetLeavesNoPlannedRemainingQuota() {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+    let windowStart = calendar.date(from: DateComponents(year: 2026, month: 1, day: 1, hour: 10))!
+    let reset = calendar.date(from: DateComponents(year: 2026, month: 1, day: 8, hour: 10))!
+    let now = calendar.date(from: DateComponents(year: 2026, month: 1, day: 8, hour: 2))!
+    let workPlan = QuotaWorkPlanSettings(
+        isEnabled: true,
+        offPeriods: [QuotaWorkPlanPeriod(startMinuteOfDay: 2 * 60, endMinuteOfDay: 10 * 60)]
+    )
+
+    #expect(
+        abs(
+            workPlan.expectedRemainingPercent(
+                startDate: windowStart,
+                resetDate: reset,
+                now: now,
+                calendar: calendar
+            )
+        ) < 0.001
+    )
+}
+
+@Test
+func quotaWorkPlanTwentyThreeHourOffPeriodOnlyConsumesDuringUsableHour() {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+    let windowStart = calendar.date(from: DateComponents(year: 2026, month: 1, day: 1, hour: 10))!
+    let reset = calendar.date(from: DateComponents(year: 2026, month: 1, day: 8, hour: 10))!
+    let afterFifthUsableHour = calendar.date(from: DateComponents(year: 2026, month: 1, day: 5, hour: 11))!
+    let workPlan = QuotaWorkPlanSettings(
+        isEnabled: true,
+        offPeriods: [QuotaWorkPlanPeriod(startMinuteOfDay: 11 * 60, endMinuteOfDay: 10 * 60)]
+    )
+
+    #expect(workPlan.availableMinutesPerDay == 60)
+    #expect(
+        abs(
+            workPlan.expectedRemainingPercent(
+                startDate: windowStart,
+                resetDate: reset,
+                now: afterFifthUsableHour,
+                calendar: calendar
+            ) - (2.0 / 7.0 * 100)
+        ) < 0.001
+    )
+}
+
+@Test
+func quotaOverviewRowUsesWorkPlanForWeeklyTheoryText() {
+    withExclusiveAppLocalization {
+        AppLocalization.setPreferredLanguage(.en, preferredLanguages: ["en-US"])
+        var calendar = Calendar.current
+        calendar.timeZone = TimeZone.current
+        let now = calendar.date(from: DateComponents(year: 2026, month: 1, day: 1, hour: 6))!
+        let reset = calendar.date(from: DateComponents(year: 2026, month: 1, day: 8, hour: 0))!
+        let modes = Array(repeating: QuotaWorkPlanHourMode.paused, count: 12)
+            + Array(repeating: QuotaWorkPlanHourMode.normal, count: 12)
+        let workPlan = QuotaWorkPlanSettings(isEnabled: true, hourlyModes: modes)
+        let profile = makeTestProviderProfile(
+            id: "planned",
+            displayName: "planned@example.com",
+            authMode: .chatgpt,
+            snapshot: CodexSnapshot(
+                account: CodexAccount(type: "chatgpt", email: "planned@example.com", planType: "plus"),
+                rateLimits: RateLimitSnapshot(
+                    limitId: nil,
+                    limitName: nil,
+                    primary: nil,
+                    secondary: RateLimitWindow(
+                        usedPercent: 20,
+                        windowDurationMins: 10_080,
+                        resetsAt: Int(reset.timeIntervalSince1970)
+                    ),
+                    planType: "plus"
+                ),
+                fetchedAt: now
+            )
+        )
+
+        let texts = quotaOverviewRowQuotaTexts(
+            for: profile,
+            quotaWorkPlan: workPlan,
+            now: now
+        )
+
+        #expect(texts.secondaryRemainingText == "1w 80%/100%")
+        #expect(texts.secondaryPaceState == .overGuard)
+    }
+}
+
+@Test
+func quotaWorkPlanFallsBackToNormalWhenAllHoursArePaused() {
+    let workPlan = QuotaWorkPlanSettings(
+        isEnabled: true,
+        hourlyModes: Array(repeating: .paused, count: 24)
+    )
+
+    #expect(workPlan.effectiveHourlyModes == Array(repeating: .normal, count: 24))
+    #expect(workPlan.dailyRelativeWeight == 1_440)
 }

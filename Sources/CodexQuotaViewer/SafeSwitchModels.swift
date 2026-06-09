@@ -4,6 +4,7 @@ struct ProviderProfile: Equatable, Identifiable {
     enum Source: String, Codable, Equatable {
         case current
         case vault
+        case cpaPoolMember
     }
 
     let id: String
@@ -24,6 +25,11 @@ struct ProviderProfile: Equatable, Identifiable {
     let managedFileURLs: [URL]
     let lastUsedAt: Date?
     let quotaFetchedAt: Date?
+    let cpaPoolParentID: String?
+    let cpaPoolParentDisplayName: String?
+    let isCPAPoolCurrentRoute: Bool
+    let cpaPoolReasoningEffort: String?
+    let cpaPoolStatusCode: Int?
 
     init(
         id: String,
@@ -43,7 +49,12 @@ struct ProviderProfile: Equatable, Identifiable {
         isCurrent: Bool,
         managedFileURLs: [URL] = [],
         lastUsedAt: Date? = nil,
-        quotaFetchedAt: Date? = nil
+        quotaFetchedAt: Date? = nil,
+        cpaPoolParentID: String? = nil,
+        cpaPoolParentDisplayName: String? = nil,
+        isCPAPoolCurrentRoute: Bool = false,
+        cpaPoolReasoningEffort: String? = nil,
+        cpaPoolStatusCode: Int? = nil
     ) {
         self.id = id
         self.displayName = displayName
@@ -63,6 +74,11 @@ struct ProviderProfile: Equatable, Identifiable {
         self.managedFileURLs = managedFileURLs
         self.lastUsedAt = lastUsedAt
         self.quotaFetchedAt = quotaFetchedAt ?? snapshot?.fetchedAt
+        self.cpaPoolParentID = cpaPoolParentID
+        self.cpaPoolParentDisplayName = cpaPoolParentDisplayName
+        self.isCPAPoolCurrentRoute = isCPAPoolCurrentRoute
+        self.cpaPoolReasoningEffort = cpaPoolReasoningEffort
+        self.cpaPoolStatusCode = cpaPoolStatusCode
     }
 
     var modeLabel: String {
@@ -90,6 +106,10 @@ struct ProviderProfile: Equatable, Identifiable {
             baseURLHost,
             model,
         ])
+    }
+
+    var isReadOnlyPoolMember: Bool {
+        source == .cpaPoolMember
     }
 }
 

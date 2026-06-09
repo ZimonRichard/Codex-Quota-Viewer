@@ -220,6 +220,7 @@ func parseRuntimeConfig(_ configData: Data?) -> RuntimeConfigSummary {
     var summary = RuntimeConfigSummary()
     let rawProviderID = document.rootAssignmentValue(forKey: "model_provider")
     let rootBaseURL = document.rootAssignmentValue(forKey: "base_url")
+        ?? document.rootAssignmentValue(forKey: "openai_base_url")
     let section = rawProviderID.flatMap {
         document.section(named: "model_providers.\($0)")
     }

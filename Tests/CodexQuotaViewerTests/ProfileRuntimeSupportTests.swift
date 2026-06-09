@@ -80,6 +80,23 @@ func parseRuntimeConfigPreservesHashesInsideQuotedValues() {
 }
 
 @Test
+func parseRuntimeConfigAcceptsLegacyOpenAIBaseURLAssignment() {
+    let summary = parseRuntimeConfig(
+        Data(
+            """
+            model_provider = "openai"
+            openai_base_url = "http://127.0.0.1:3001/v1"
+            model = "gpt-5.5"
+            """.utf8
+        )
+    )
+
+    #expect(summary.providerID == "openai")
+    #expect(summary.baseURL == "http://127.0.0.1:3001/v1")
+    #expect(summary.model == "gpt-5.5")
+}
+
+@Test
 func lightweightTOMLDocumentParsesRootAssignmentsAndProviderSections() throws {
     let document = try LightweightTOMLDocument(
         data: Data(

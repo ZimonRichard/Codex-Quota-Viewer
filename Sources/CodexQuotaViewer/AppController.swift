@@ -64,11 +64,11 @@ func resolveProfileIndicatorKind(
         return .neutral
     }
 
-    if snapshot.account.type == "apiKey" {
+    let windows = quotaDisplayWindows(from: snapshot, now: Date())
+    if snapshot.account.type == "apiKey" && windows.isEmpty {
         return .apiKey
     }
 
-    let windows = quotaDisplayWindows(from: snapshot)
     guard !windows.isEmpty else {
         return .neutral
     }
@@ -88,6 +88,7 @@ final class AppController: NSObject, NSMenuDelegate {
         indexURL: store.accountsIndexURL
     )
     private let rpcClient = CodexRPCClient()
+    private let cpaQuotaSnapshotFetcher = CPAQuotaSnapshotFetcher()
     private let launchAtLoginManager = LaunchAtLoginManager()
     private let statusItemRenderer = StatusItemRenderer()
     private let desktopController = CodexDesktopController()
@@ -164,6 +165,13 @@ final class AppController: NSObject, NSMenuDelegate {
             try await rpcClient.fetchSavedAccountSnapshot(
                 authData: runtimeMaterial.authData,
                 configData: runtimeMaterial.configData,
+                timeout: timeout
+            )
+        },
+        apiQuotaSnapshotFetcher: { [cpaQuotaSnapshotFetcher] runtimeMaterial, displayName, timeout in
+            try await cpaQuotaSnapshotFetcher.fetchResult(
+                runtimeMaterial: runtimeMaterial,
+                displayName: displayName,
                 timeout: timeout
             )
         }
@@ -302,7 +310,7 @@ final class AppController: NSObject, NSMenuDelegate {
         profileRefreshController.prepareInitialState(currentRuntimeMaterial: currentRuntimeMaterial)
         applySettingsSideEffects(showErrorsInStatus: false)
         rebuildMenu()
-        profileRefreshController.refreshCurrentProfileOnly()
+        profileRefreshController.refreshAllProfiles()
     }
 
     func menuWillOpen(_ menu: NSMenu) {
@@ -362,7 +370,7 @@ final class AppController: NSObject, NSMenuDelegate {
                 statusNotice = MenuNotice(kind: .error, message: userFacingMessage(for: error))
             }
         }
-        refreshSettingsUI()
+        refreshSettingsUI(forceVisibleMenuUpdate: true)
     }
 
     private func synchronizeLocalizationState() {
@@ -371,11 +379,58 @@ final class AppController: NSObject, NSMenuDelegate {
         localizationNotice = result.notice
     }
 
-    private func refreshSettingsUI() {
+    private func refreshSettingsUI(forceVisibleMenuUpdate: Bool = false) {
         installApplicationMainMenu(app: NSApp)
+        refreshQuotaOverviewState()
         settingsWindowCoordinator.update(state: currentSettingsWindowPresentationState())
         updateStatusTitle()
+        if forceVisibleMenuUpdate,
+           menuTrackingGate.isTracking {
+            if !updateMenuInPlaceIfPossible(),
+               !updateVisibleQuotaOverviewAndWorkPlanItemsIfPossible() {
+                pendingMenuRefreshReason = "settings-ui"
+            }
+            return
+        }
         rebuildMenu(reason: "settings-ui")
+    }
+
+    @discardableResult
+    private func updateVisibleQuotaWorkPlanMenuItemIfPossible() -> Bool {
+        var didUpdate = false
+        for item in menu.items {
+            guard item.view is QuotaWorkPlanMenuToggleView else {
+                continue
+            }
+            configureQuotaWorkPlanMenuItem(item)
+            didUpdate = true
+        }
+        return didUpdate
+    }
+
+    @discardableResult
+    private func updateVisibleQuotaOverviewAndWorkPlanItemsIfPossible() -> Bool {
+        var didUpdate = updateVisibleQuotaWorkPlanMenuItemIfPossible()
+
+        guard visibleMenuNotice() == nil,
+              let quotaSectionEndIndex = menu.items.firstIndex(where: \.isSeparatorItem) else {
+            return didUpdate
+        }
+
+        let quotaItems = Array(menu.items[..<quotaSectionEndIndex])
+        if reconcileQuotaOverviewMenuItemsInPlace(
+            quotaItems,
+            quotaOverviewState: quotaOverviewState,
+            refreshIntervalPreset: settings.refreshIntervalPreset,
+            quotaWorkPlan: settings.quotaWorkPlan,
+            isPerformingSafeSwitchOperation: isPerformingSafeSwitchOperation,
+            target: self,
+            activateSavedAccountAction: #selector(activateSavedAccountTapped(_:))
+        ) {
+            didUpdate = true
+        }
+
+        return didUpdate
     }
 
     private func refreshSettingsAccountPanel() {
@@ -426,6 +481,9 @@ final class AppController: NSObject, NSMenuDelegate {
         addQuotaOverviewSection()
 
         menu.addItem(.separator())
+        menu.addItem(makeQuotaWorkPlanMenuItem())
+
+        menu.addItem(.separator())
         menu.addItem(makeChatGPTProviderModeActionItem())
 
         menu.addItem(.separator())
@@ -452,7 +510,7 @@ final class AppController: NSObject, NSMenuDelegate {
     private func updateMenuInPlaceIfPossible() -> Bool {
         guard visibleMenuNotice() == nil,
               let quotaSectionEndIndex = menu.items.firstIndex(where: \.isSeparatorItem),
-              menu.items.count == quotaSectionEndIndex + 6 else {
+              menu.items.count == quotaSectionEndIndex + 8 else {
             return false
         }
 
@@ -461,6 +519,7 @@ final class AppController: NSObject, NSMenuDelegate {
             quotaItems,
             quotaOverviewState: quotaOverviewState,
             refreshIntervalPreset: settings.refreshIntervalPreset,
+            quotaWorkPlan: settings.quotaWorkPlan,
             isPerformingSafeSwitchOperation: isPerformingSafeSwitchOperation,
             target: self,
             activateSavedAccountAction: #selector(activateSavedAccountTapped(_:))
@@ -468,14 +527,21 @@ final class AppController: NSObject, NSMenuDelegate {
             return false
         }
 
-        let providerModeItem = menu.items[quotaSectionEndIndex + 1]
-        configureChatGPTProviderModeMenuItem(providerModeItem)
+        let workPlanItem = menu.items[quotaSectionEndIndex + 1]
+        configureQuotaWorkPlanMenuItem(workPlanItem)
 
         guard menu.items[quotaSectionEndIndex + 2].isSeparatorItem else {
             return false
         }
 
-        let maintenanceItem = menu.items[quotaSectionEndIndex + 3]
+        let providerModeItem = menu.items[quotaSectionEndIndex + 3]
+        configureChatGPTProviderModeMenuItem(providerModeItem)
+
+        guard menu.items[quotaSectionEndIndex + 4].isSeparatorItem else {
+            return false
+        }
+
+        let maintenanceItem = menu.items[quotaSectionEndIndex + 5]
         maintenanceItem.title = AppLocalization.localized(en: "Maintenance", zh: "维护")
         maintenanceItem.action = nil
         maintenanceItem.target = nil
@@ -483,13 +549,13 @@ final class AppController: NSObject, NSMenuDelegate {
         maintenanceItem.isEnabled = true
         maintenanceItem.submenu = makeMaintenanceMenu()
 
-        let settingsItem = menu.items[quotaSectionEndIndex + 4]
+        let settingsItem = menu.items[quotaSectionEndIndex + 6]
         settingsItem.title = AppLocalization.localized(en: "Settings…", zh: "设置…")
         settingsItem.action = #selector(openSettingsTapped)
         settingsItem.target = self
         settingsItem.isEnabled = true
 
-        let quitItem = menu.items[quotaSectionEndIndex + 5]
+        let quitItem = menu.items[quotaSectionEndIndex + 7]
         quitItem.title = AppLocalization.localized(en: "Quit", zh: "退出")
         quitItem.action = #selector(quitTapped)
         quitItem.target = self
@@ -567,19 +633,24 @@ final class AppController: NSObject, NSMenuDelegate {
 
     private func updateStatusTitle() {
         guard let button = statusItem.button else { return }
-        let apiKeyDetails = currentSnapshot?.account.type == "apiKey"
+        let effectiveCurrentProfile = currentProfileWithVaultQuotaFallback(
+            currentProfile: currentProviderProfile,
+            vaultProfiles: vaultProfiles
+        )
+        let effectiveSnapshot = effectiveCurrentProfile?.snapshot ?? currentSnapshot
+        let apiKeyDetails = effectiveCurrentProfile?.authMode == .apiKey
             ? (try? store.currentRuntimeMaterial()).flatMap {
                 apiKeyProfileDetails(authData: $0.authData, configData: $0.configData)
             }
             : nil
         let presentation = buildStatusItemPresentation(
-            snapshot: currentSnapshot,
+            snapshot: effectiveSnapshot,
             apiKeyDetails: apiKeyDetails,
             statusItemStyle: settings.statusItemStyle,
             refreshIntervalPreset: settings.refreshIntervalPreset,
             isRefreshing: isRefreshing,
             currentError: currentError,
-            lastRefreshAt: lastRefreshAt
+            lastRefreshAt: effectiveCurrentProfile?.quotaFetchedAt ?? lastRefreshAt
         )
         applyStatusItemPresentation(
             presentation,
@@ -610,6 +681,7 @@ final class AppController: NSObject, NSMenuDelegate {
         for item in buildQuotaOverviewMenuItems(
             quotaOverviewState: quotaOverviewState,
             refreshIntervalPreset: settings.refreshIntervalPreset,
+            quotaWorkPlan: settings.quotaWorkPlan,
             isPerformingSafeSwitchOperation: isPerformingSafeSwitchOperation,
             target: self,
             activateSavedAccountAction: #selector(activateSavedAccountTapped(_:))
@@ -624,6 +696,32 @@ final class AppController: NSObject, NSMenuDelegate {
             target: self,
             action: #selector(chatGPTProviderModeTapped)
         )
+    }
+
+    private func makeQuotaWorkPlanMenuItem() -> NSMenuItem {
+        let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        configureQuotaWorkPlanMenuItem(item)
+        return item
+    }
+
+    private func configureQuotaWorkPlanMenuItem(_ item: NSMenuItem) {
+        item.title = AppLocalization.localized(
+            en: "Work Plan Mode",
+            zh: "工作计划模式"
+        )
+        item.action = nil
+        item.target = nil
+        item.representedObject = nil
+        item.isEnabled = true
+        item.state = .off
+        item.toolTip = settings.quotaWorkPlan.dailyShareDescription
+        item.submenu = nil
+        let toggleView = (item.view as? QuotaWorkPlanMenuToggleView) ?? QuotaWorkPlanMenuToggleView()
+        toggleView.apply(workPlan: settings.quotaWorkPlan)
+        toggleView.onToggle = { [weak self] in
+            self?.quotaWorkPlanTapped()
+        }
+        item.view = toggleView
     }
 
     private func configureChatGPTProviderModeMenuItem(_ item: NSMenuItem) {
@@ -713,8 +811,8 @@ final class AppController: NSObject, NSMenuDelegate {
         }
 
         let matchingVaultRecord = matchingVaultRecord(for: currentRuntimeMaterial)
-        let fallbackName = snapshot?.account.displayLabel
-            ?? matchingVaultRecord?.metadata.displayName
+        let fallbackName = matchingVaultRecord?.metadata.displayName
+            ?? snapshot?.account.displayLabel
             ?? AppLocalization.currentAccountFallbackName()
 
         return buildProviderProfile(
@@ -767,7 +865,10 @@ final class AppController: NSObject, NSMenuDelegate {
                 AppLocalization.localized(en: "Target: \(targetProfile.displayName)", zh: "目标：\(targetProfile.displayName)"),
                 AppLocalization.localized(en: "Provider: \(targetProfile.providerLabel)", zh: "Provider：\(targetProfile.providerLabel)"),
                 AppLocalization.localized(en: "Files to back up: \(preview.filesToBackup.count)", zh: "需备份文件：\(preview.filesToBackup.count)"),
-                AppLocalization.localized(en: "Rollouts to update: \(preview.rolloutFilesToUpdate.count)", zh: "需更新 rollout：\(preview.rolloutFilesToUpdate.count)"),
+                AppLocalization.localized(
+                    en: "Local thread repair is available separately if history metadata needs it.",
+                    zh: "如历史对话元数据需要修复，可在切换后单独执行 Repair。"
+                ),
                 preview.codexWasRunning
                     ? AppLocalization.localized(en: "Codex will be closed and reopened automatically.", zh: "Codex 会自动关闭并重新打开。")
                     : AppLocalization.localized(en: "Codex is not running, so no reopen is needed.", zh: "Codex 当前未运行，无需重新打开。"),
@@ -828,6 +929,10 @@ final class AppController: NSObject, NSMenuDelegate {
                     en: "Files to back up: \(preview.filesToBackup.count)",
                     zh: "需备份文件：\(preview.filesToBackup.count)"
                 ),
+                AppLocalization.localized(
+                    en: "Large local thread repair is skipped during the switch and can be run separately.",
+                    zh: "切换时会跳过大型本地对话修复；需要时可单独执行 Repair。"
+                ),
                 preview.codexWasRunning
                     ? AppLocalization.localized(en: "Codex will be closed and reopened automatically.", zh: "Codex 会自动关闭并重新打开。")
                     : AppLocalization.localized(en: "Codex is not running, so no reopen is needed.", zh: "Codex 当前未运行，无需重新打开。"),
@@ -858,6 +963,33 @@ final class AppController: NSObject, NSMenuDelegate {
     @objc
     private func refreshTapped() {
         refreshAllProfiles()
+    }
+
+    @objc
+    private func quotaWorkPlanTapped() {
+        let previousSettings = settings
+        var updatedSettings = settings
+        updatedSettings.quotaWorkPlan.isEnabled.toggle()
+
+        do {
+            settings = try applySettingsTransaction(
+                previous: previousSettings,
+                updated: updatedSettings,
+                syncLaunchAtLogin: { enabled in
+                    try self.launchAtLoginManager.sync(enabled: enabled)
+                },
+                saveSettings: { settings in
+                    try self.store.saveSettings(settings)
+                }
+            )
+            AppLog.settings.info("Toggled quota work plan mode")
+        } catch {
+            settings = previousSettings
+            statusNotice = MenuNotice(kind: .error, message: userFacingMessage(for: error))
+            AppLog.settings.error("Quota work plan toggle failed: \(self.userFacingMessage(for: error), privacy: .public)")
+        }
+
+        refreshSettingsUI(forceVisibleMenuUpdate: true)
     }
 
     @objc
@@ -1005,7 +1137,7 @@ final class AppController: NSObject, NSMenuDelegate {
                     ),
                     lifetime: .timed(4)
                 )
-                self.cachedThreadSyncStatus = .healthy(expectedProvider: "OpenAI")
+                self.cachedThreadSyncStatus = nil
             } catch {
                 self.presentSafeSwitchNotice(
                     self.localizedErrorNotice(
@@ -1276,10 +1408,7 @@ final class AppController: NSObject, NSMenuDelegate {
                     lifetime: .timed(4)
                 )
                 AppLog.safeSwitch.info("Safe switch completed target=\(targetProfile.displayName, privacy: .public)")
-                self.cachedThreadSyncStatus = .healthy(
-                    expectedProvider: targetProfile.threadProviderID
-                        ?? (targetProfile.authMode == .chatgpt ? "openai" : targetProfile.providerID)
-                )
+                self.cachedThreadSyncStatus = nil
             } catch {
                 AppLog.safeSwitch.error("Safe switch failed: \(self.userFacingMessage(for: error), privacy: .public)")
                 self.presentSafeSwitchNotice(
@@ -1535,7 +1664,7 @@ final class AppController: NSObject, NSMenuDelegate {
                     AppLog.settings.error("Settings update failed: \(self.userFacingMessage(for: error), privacy: .public)")
                 }
                 self.profileRefreshController.scheduleRefreshTimer()
-                self.refreshSettingsUI()
+                self.refreshSettingsUI(forceVisibleMenuUpdate: true)
             },
             onAddChatGPTAccount: { [weak self] in
                 self?.addChatGPTAccountTapped()
@@ -1592,9 +1721,10 @@ final class AppController: NSObject, NSMenuDelegate {
             return
         }
 
-        let builtProfiles = snapshot.accounts.map { record in
+        var builtProfiles: [ProviderProfile] = []
+        for record in snapshot.accounts {
             let quotaRecord = vaultQuotaRecords[record.id]
-            return buildProviderProfile(
+            let profile = buildProviderProfile(
                 id: record.id,
                 fallbackDisplayName: record.metadata.displayName,
                 source: .vault,
@@ -1608,12 +1738,59 @@ final class AppController: NSObject, NSMenuDelegate {
                 lastUsedAt: record.metadata.lastUsedAt,
                 quotaFetchedAt: quotaRecord?.fetchedAt
             )
+            builtProfiles.append(profile)
+            builtProfiles.append(
+                contentsOf: cpaPoolMemberProfiles(
+                    parent: profile,
+                    parentDisplayName: record.metadata.displayName,
+                    poolSnapshots: quotaRecord?.poolSnapshots ?? []
+                )
+            )
         }
 
         vaultProfiles = sortProviderProfiles(builtProfiles)
         availableSwitchTargets = sortProviderProfiles(
-            builtProfiles.filter { !runtimeMatches($0.runtimeMaterial, currentRuntimeMaterial) }
+            builtProfiles.filter { $0.source == .vault && !runtimeMatches($0.runtimeMaterial, currentRuntimeMaterial) }
         )
+    }
+
+    private func cpaPoolMemberProfiles(
+        parent: ProviderProfile,
+        parentDisplayName: String,
+        poolSnapshots: [CPAPoolQuotaSnapshot]
+    ) -> [ProviderProfile] {
+        guard parent.authMode == .apiKey,
+              !poolSnapshots.isEmpty else {
+            return []
+        }
+
+        return poolSnapshots.map { member in
+            return ProviderProfile(
+                id: "\(parent.id)::cpa::\(member.id)",
+                displayName: member.displayName,
+                source: .cpaPoolMember,
+                runtimeMaterial: parent.runtimeMaterial,
+                authMode: .apiKey,
+                providerID: parent.providerID,
+                threadProviderID: parent.threadProviderID,
+                providerDisplayName: AppLocalization.localized(en: "CPA Pool", zh: "CPA 号池"),
+                baseURLHost: parent.baseURLHost,
+                model: member.model ?? parent.model,
+                snapshot: member.snapshot,
+                healthStatus: .healthy,
+                errorMessage: nil,
+                quotaFailureDisposition: nil,
+                isCurrent: false,
+                managedFileURLs: [],
+                lastUsedAt: member.snapshot.fetchedAt,
+                quotaFetchedAt: member.snapshot.fetchedAt,
+                cpaPoolParentID: parent.id,
+                cpaPoolParentDisplayName: parentDisplayName,
+                isCPAPoolCurrentRoute: member.isCurrentRoute,
+                cpaPoolReasoningEffort: member.reasoningEffort,
+                cpaPoolStatusCode: member.statusCode
+            )
+        }
     }
 
     private func defaultThreadSyncStatus() -> LocalThreadSyncStatus {
@@ -1652,6 +1829,7 @@ final class AppController: NSObject, NSMenuDelegate {
             currentProfile: currentProviderProfile,
             vaultProfiles: vaultProfiles,
             refreshIntervalPreset: settings.refreshIntervalPreset,
+            quotaWorkPlan: settings.quotaWorkPlan,
             now: now
         )
     }

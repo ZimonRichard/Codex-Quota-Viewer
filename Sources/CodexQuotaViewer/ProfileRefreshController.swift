@@ -178,7 +178,7 @@ final class ProfileRefreshController {
 
         let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                self?.refreshCurrentProfileOnly()
+                self?.performProfileRefresh(.menuOpenSelective(refreshCurrentAccount: true))
             }
         }
         refreshTimer = timer

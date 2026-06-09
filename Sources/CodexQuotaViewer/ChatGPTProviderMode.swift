@@ -120,6 +120,7 @@ final class ChatGPTProviderModeManager {
     private let store: ProfileStore
     private let backupManager: BackupManager
     private let rolloutSynchronizer: RolloutProviderSynchronizer
+    private let threadProviderRelabeler: LocalThreadProviderRelabeler
     private let repairClient: OfficialThreadRepairing?
     private let desktopController: CodexDesktopControlling
     private let quotaChannelInvalidator: CodexRPCChannelInvalidating
@@ -139,6 +140,7 @@ final class ChatGPTProviderModeManager {
         self.store = store
         self.backupManager = backupManager
         self.rolloutSynchronizer = rolloutSynchronizer
+        threadProviderRelabeler = LocalThreadProviderRelabeler()
         self.repairClient = repairClient
         self.desktopController = desktopController
         self.quotaChannelInvalidator = quotaChannelInvalidator
@@ -167,10 +169,7 @@ final class ChatGPTProviderModeManager {
         try validateCurrentAccountIsChatGPT()
         try validateAPIProviderRecord(providerRecord)
         let targetProviderID = try targetProviderID(for: providerRecord)
-        let rolloutFilesToUpdate = try rolloutSynchronizer.plannedUpdates(
-            in: [store.sessionsRootURL, store.archivedSessionsRootURL],
-            targetProvider: targetProviderID
-        )
+        let rolloutFilesToUpdate: [URL] = []
         return ChatGPTProviderModePreview(
             providerRecord: providerRecord,
             targetProviderID: targetProviderID,
@@ -212,13 +211,16 @@ final class ChatGPTProviderModeManager {
             try writer.write(authData, to: store.currentAuthURL)
             try writer.write(mergedConfigData, to: store.currentConfigURL)
             try writer.write(encoder.encode(state), to: stateURL)
-
             let rolloutResult = try rolloutSynchronizer.syncProviders(
                 in: [store.sessionsRootURL, store.archivedSessionsRootURL],
-                targetProvider: latestPreview.targetProviderID,
-                writer: writer
+                targetProvider: latestPreview.targetProviderID
+            )
+            _ = try threadProviderRelabeler.relabel(
+                databaseURL: store.stateDatabaseURL,
+                targetProvider: latestPreview.targetProviderID
             )
             let repairSummary = try await repairClient?.rescanAndRepair() ?? emptyOfficialRepairSummary()
+
             await quotaChannelInvalidator.invalidateAllReusableChannels()
             try await desktopController.reopenIfNeeded(previouslyRunning: previouslyRunning)
 
@@ -233,6 +235,7 @@ final class ChatGPTProviderModeManager {
             if let restorePoint {
                 do {
                     try backupManager.restoreRestorePoint(restorePoint)
+                    try? resyncThreadsToCurrentRuntime()
                 } catch {
                     try? await desktopController.reopenIfNeeded(previouslyRunning: previouslyRunning)
                     throw ChatGPTProviderModeError.automaticRollbackFailed
@@ -253,6 +256,9 @@ final class ChatGPTProviderModeManager {
         do {
             let restored = try backupManager.restoreRestorePoint(id: state.restorePointID)
             try? FileManager.default.removeItem(at: stateURL)
+            try sanitizeRestoredChatGPTRuntimeConfigIfNeeded()
+            try resyncThreadsToCurrentRuntime()
+            _ = try await repairClient?.rescanAndRepair()
 
             await quotaChannelInvalidator.invalidateAllReusableChannels()
             try await desktopController.reopenIfNeeded(previouslyRunning: previouslyRunning)
@@ -291,12 +297,60 @@ final class ChatGPTProviderModeManager {
 
     private func filesToBackup(rolloutFilesToUpdate: [URL]) -> [URL] {
         deduplicatedStandardizedFileURLs(
-            store.protectedMutationFileURLs(additionalFiles: rolloutFilesToUpdate + [stateURL])
+            store.runtimeSwitchFileURLs(additionalFiles: rolloutFilesToUpdate + [stateURL])
         )
+    }
+
+    private func resyncThreadsToCurrentRuntime() throws {
+        guard let providerID = try currentRuntimeProviderID() else {
+            return
+        }
+        _ = try rolloutSynchronizer.syncProviders(
+            in: [store.sessionsRootURL, store.archivedSessionsRootURL],
+            targetProvider: providerID
+        )
+        _ = try threadProviderRelabeler.relabel(
+            databaseURL: store.stateDatabaseURL,
+            targetProvider: providerID
+        )
+    }
+
+    private func currentRuntimeProviderID() throws -> String? {
+        let summary = parseRuntimeConfig(try store.currentConfigData())
+        if let providerID = summary.threadProviderID?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !providerID.isEmpty {
+            return providerID
+        }
+
+        if resolveAuthMode(authData: try store.currentAuthData()) == .chatgpt {
+            return "openai"
+        }
+
+        return nil
+    }
+
+    private func sanitizeRestoredChatGPTRuntimeConfigIfNeeded() throws {
+        guard resolveAuthMode(authData: try store.currentAuthData()) == .chatgpt else {
+            return
+        }
+
+        let currentConfigData = try store.currentConfigData()
+        let summary = parseRuntimeConfig(currentConfigData)
+        guard summary.threadProviderID == "openai" else {
+            return
+        }
+
+        let sanitized = try mergeRuntimeConfig(
+            currentConfigData: currentConfigData,
+            targetConfigData: synthesizedStoredChatGPTConfig(from: summary),
+            preserveExistingProviderSections: false
+        )
+        try sanitized.write(to: store.currentConfigURL, options: .atomic)
     }
 }
 
-private func emptyOfficialRepairSummary() -> OfficialRepairSummary {
+func emptyOfficialRepairSummary() -> OfficialRepairSummary {
     OfficialRepairSummary(
         createdThreads: 0,
         updatedThreads: 0,

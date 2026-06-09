@@ -92,7 +92,12 @@ export class CodexSessionIndexRepository {
             continue;
           }
 
-          entries.set(id, { id, threadName, updatedAt });
+          const existing = entries.get(id);
+          const next = { id, threadName, updatedAt };
+
+          if (!existing || compareUpdatedAt(next.updatedAt, existing.updatedAt) > 0) {
+            entries.set(id, next);
+          }
         } catch {
           continue;
         }
@@ -129,5 +134,24 @@ export class CodexSessionIndexRepository {
 }
 
 function sortEntriesByUpdatedAt(left: CodexSessionIndexEntry, right: CodexSessionIndexEntry) {
-  return Date.parse(right.updatedAt) - Date.parse(left.updatedAt);
+  return compareUpdatedAt(right.updatedAt, left.updatedAt);
+}
+
+function compareUpdatedAt(left: string, right: string) {
+  const leftTime = Date.parse(left);
+  const rightTime = Date.parse(right);
+
+  if (!Number.isFinite(leftTime) && !Number.isFinite(rightTime)) {
+    return left.localeCompare(right);
+  }
+
+  if (!Number.isFinite(leftTime)) {
+    return -1;
+  }
+
+  if (!Number.isFinite(rightTime)) {
+    return 1;
+  }
+
+  return leftTime - rightTime;
 }

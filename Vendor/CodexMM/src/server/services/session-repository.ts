@@ -91,11 +91,8 @@ export class SessionRepository {
 
       for (const entry of catalogEntries) {
         const existing = existingById.get(entry.summary.id);
-        const createdAt = existing?.created_at ?? indexedAt;
-        const updatedAt =
-          existing && !didCatalogEntryChange(existing, entry)
-            ? existing.updated_at
-            : indexedAt;
+        const createdAt = existing?.created_at ?? entry.summary.startedAt;
+        const updatedAt = entry.summary.updatedAt;
 
         insertSession.run({
           ...entry.summary,
@@ -188,11 +185,8 @@ export class SessionRepository {
       )
     `);
     const persistCatalogEntry = this.db.transaction((catalogEntry: CatalogSessionEntry) => {
-      const createdAt = existing?.created_at ?? now;
-      const updatedAt =
-        existing && !didCatalogEntryChange(existing, catalogEntry)
-          ? existing.updated_at
-          : now;
+      const createdAt = existing?.created_at ?? catalogEntry.summary.startedAt;
+      const updatedAt = catalogEntry.summary.updatedAt;
 
       upsertSession.run({
         ...catalogEntry.summary,
@@ -673,33 +667,6 @@ function buildSessionFilterClause(filters: SessionFilters) {
     clause: clauses.join(" and "),
     params,
   };
-}
-
-function didCatalogEntryChange(
-  existing: SessionRow,
-  entry: CatalogSessionEntry,
-) {
-  const summary = entry.summary;
-
-  return (
-    existing.activePath !== entry.activePath ||
-    existing.archivePath !== entry.archivePath ||
-    existing.snapshotPath !== entry.snapshotPath ||
-    existing.originalRelativePath !== entry.originalRelativePath ||
-    existing.cwd !== summary.cwd ||
-    existing.startedAt !== summary.startedAt ||
-    existing.originator !== summary.originator ||
-    existing.source !== summary.source ||
-    existing.cliVersion !== summary.cliVersion ||
-    existing.modelProvider !== summary.modelProvider ||
-    existing.sizeBytes !== summary.sizeBytes ||
-    existing.lineCount !== summary.lineCount ||
-    existing.eventCount !== summary.eventCount ||
-    existing.toolCallCount !== summary.toolCallCount ||
-    existing.userPromptExcerpt !== summary.userPromptExcerpt ||
-    existing.latestAgentMessageExcerpt !== summary.latestAgentMessageExcerpt ||
-    existing.status !== entry.status
-  );
 }
 
 function toTimelineRow(

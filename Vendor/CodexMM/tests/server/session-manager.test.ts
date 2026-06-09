@@ -95,6 +95,39 @@ describe("SessionManager", () => {
     await expect(readSessionIndexEntry(harness.codexHome, "session-rescan-idempotent")).resolves.toBeNull();
   });
 
+  test("rescans use the rollout last event time instead of the scan time", async () => {
+    await seedSession(harness.codexHome, {
+      id: "session-content-updated-at",
+      cwd: "/work/content-updated-at",
+      startedAt: "2026-03-29T10:00:00.000Z",
+      firstUserMessage: "第一条消息",
+      latestAgentMessage: "初始回复",
+      timeline: [
+        {
+          type: "message:user",
+          text: "后续问题",
+          timestamp: "2026-03-29T10:30:00.000Z",
+        },
+        {
+          type: "message:assistant",
+          text: "后续回答",
+          timestamp: "2026-03-29T10:45:00.000Z",
+        },
+      ],
+      registerOfficialThread: false,
+      registerSessionIndex: false,
+    });
+
+    await manager.rescan();
+    const detail = await manager.getSessionDetail("session-content-updated-at");
+
+    expect(detail.record.createdAt).toBe("2026-03-29T10:00:00.000Z");
+    expect(detail.record.updatedAt).toBe("2026-03-29T10:45:00.000Z");
+    expect(Date.parse(detail.record.indexedAt)).toBeGreaterThan(
+      Date.parse(detail.record.updatedAt),
+    );
+  });
+
   test("reports canonical official-state issue codes without localized prose", async () => {
     await seedSession(harness.codexHome, {
       id: "session-official-state-codes",
@@ -430,6 +463,51 @@ describe("SessionManager", () => {
     });
     expect(untouchedAfter.record.updatedAt).toBe(untouchedBefore.record.updatedAt);
     expect(untouchedAfter.record.indexedAt).toBe(untouchedBefore.record.indexedAt);
+  });
+
+  test("repairs preserve manually renamed official thread titles", async () => {
+    await seedSession(harness.codexHome, {
+      id: "session-manual-title",
+      cwd: "/work/manual-title",
+      startedAt: "2026-03-29T12:16:37.087Z",
+      firstUserMessage: "原始首问标题",
+      latestAgentMessage: "后续修复不应该覆盖手动标题。",
+    });
+
+    await manager.rescan();
+
+    const renamedAt = "2026-03-29T12:30:00.000Z";
+    const officialDb = new Database(path.join(harness.codexHome, "state_5.sqlite"));
+    officialDb
+      .prepare(
+        `
+          update threads
+          set title = ?, updated_at = ?
+          where id = ?
+        `,
+      )
+      .run("手动改过的标题", Math.floor(Date.parse(renamedAt) / 1000), "session-manual-title");
+    officialDb.close();
+
+    await expect(readSessionIndexEntry(harness.codexHome, "session-manual-title")).resolves.toMatchObject({
+      id: "session-manual-title",
+      thread_name: "原始首问标题",
+    });
+
+    await manager.rescan();
+    const repair = await manager.repairOfficialThreads(["session-manual-title"]);
+    const detail = await manager.getSessionDetail("session-manual-title");
+
+    expect(repair.stats.createdThreads).toBe(0);
+    expect(readOfficialThreadTitle(harness.codexHome, "session-manual-title")).toBe(
+      "手动改过的标题",
+    );
+    await expect(readSessionIndexEntry(harness.codexHome, "session-manual-title")).resolves.toMatchObject({
+      id: "session-manual-title",
+      thread_name: "手动改过的标题",
+      updated_at: "2026-03-29T12:16:37.087Z",
+    });
+    expect(detail.officialState.status).toBe("synced");
   });
 
   test("repairs remove broken official thread rows when rollout files are gone", async () => {

@@ -107,6 +107,8 @@ struct QuotaOverviewRowPresentation: Equatable {
     let secondaryRemainingText: String
     let primaryResetText: String
     let secondaryResetText: String
+    let primaryPaceState: QuotaPaceState?
+    let secondaryPaceState: QuotaPaceState?
     let state: QuotaTileState
     let isCurrent: Bool
     let isEnabled: Bool
@@ -191,15 +193,16 @@ func buildAllAccountsMenuItemPresentation(
     isPerformingSafeSwitchOperation: Bool
 ) -> AllAccountsMenuItemPresentation {
     let isCurrent = profile.isCurrent
+    let canSwitch = !profile.isReadOnlyPoolMember && !isCurrent && !isPerformingSafeSwitchOperation
     return AllAccountsMenuItemPresentation(
         title: allAccountsMenuText(
             for: profile,
             refreshIntervalPreset: refreshIntervalPreset,
             now: now
         ),
-        showsCheckmark: isCurrent,
-        isEnabled: isCurrent || !isPerformingSafeSwitchOperation,
-        triggersDirectSwitch: !isCurrent && !isPerformingSafeSwitchOperation
+        showsCheckmark: !profile.isReadOnlyPoolMember && isCurrent,
+        isEnabled: !profile.isReadOnlyPoolMember && (isCurrent || canSwitch),
+        triggersDirectSwitch: canSwitch
     )
 }
 
@@ -218,20 +221,30 @@ func buildQuotaOverviewMenuItemPresentation(
         )
         : title
 
+    let canSwitch = !tile.profile.isReadOnlyPoolMember
+        && !tile.profile.isCurrent
+        && !isPerformingSafeSwitchOperation
+
     return QuotaOverviewMenuItemPresentation(
         title: title,
         showsCheckmark: tile.profile.isCurrent,
-        isEnabled: tile.profile.isCurrent || !isPerformingSafeSwitchOperation,
-        triggersDirectSwitch: !tile.profile.isCurrent && !isPerformingSafeSwitchOperation,
+        isEnabled: tile.profile.isCurrent || canSwitch,
+        triggersDirectSwitch: canSwitch,
         accessibilityLabel: accessibilityLabel
     )
 }
 
 func buildQuotaOverviewRowPresentation(
     for tile: QuotaTileViewModel,
+    quotaWorkPlan: QuotaWorkPlanSettings = QuotaWorkPlanSettings(),
+    now: Date = Date(),
     isPerformingSafeSwitchOperation: Bool
 ) -> QuotaOverviewRowPresentation {
-    let quotaTexts = quotaOverviewRowQuotaTexts(for: tile.profile)
+    let quotaTexts = quotaOverviewRowQuotaTexts(
+        for: tile.profile,
+        quotaWorkPlan: quotaWorkPlan,
+        now: now
+    )
     let summary = joinedNonEmptyParts([
         quotaTexts.primaryRemainingText,
         quotaTexts.secondaryRemainingText,
@@ -245,16 +258,22 @@ func buildQuotaOverviewRowPresentation(
         )
         : joinedNonEmptyParts([tile.profile.displayName, summary], separator: ", ")
 
+    let canSwitch = !tile.profile.isReadOnlyPoolMember
+        && !tile.profile.isCurrent
+        && !isPerformingSafeSwitchOperation
+
     return QuotaOverviewRowPresentation(
         name: tile.profile.displayName,
         primaryRemainingText: quotaTexts.primaryRemainingText,
         secondaryRemainingText: quotaTexts.secondaryRemainingText,
         primaryResetText: quotaTexts.primaryResetText,
         secondaryResetText: quotaTexts.secondaryResetText,
+        primaryPaceState: quotaTexts.primaryPaceState,
+        secondaryPaceState: quotaTexts.secondaryPaceState,
         state: tile.state,
         isCurrent: tile.profile.isCurrent,
-        isEnabled: !tile.profile.isCurrent && !isPerformingSafeSwitchOperation,
-        triggersDirectSwitch: !tile.profile.isCurrent && !isPerformingSafeSwitchOperation,
+        isEnabled: canSwitch,
+        triggersDirectSwitch: canSwitch,
         accessibilityLabel: accessibilityLabel
     )
 }

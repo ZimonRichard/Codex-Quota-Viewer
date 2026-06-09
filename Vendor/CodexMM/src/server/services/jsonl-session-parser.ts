@@ -53,6 +53,7 @@ export type SessionFileSummary = {
   id: string;
   cwd: string;
   startedAt: string;
+  updatedAt: string;
   originator: string;
   source: string;
   cliVersion: string;
@@ -272,10 +273,21 @@ export async function parseSessionCatalog(
     return null;
   }
 
+  const responseMessageTypes = new Set(responseMessages.map((item) => item.type));
+  const normalizedFallbackMessages = fallbackMessages.filter(
+    (item) => item.timestamp !== startedAt || !responseMessageTypes.has(item.type),
+  );
+
+  const timeline = dedupeTimelineDrafts([
+    ...normalizedFallbackMessages,
+    ...responseMessages,
+    ...toolCalls,
+  ]).map(stripTimelineDraft);
   const summary: SessionFileSummary = {
     id: sessionId,
     cwd,
     startedAt,
+    updatedAt: latestTimelineTimestamp(timeline, startedAt),
     originator: normalizeOptionalString(metaPayload.originator, "Unknown"),
     source: normalizeSource(metaPayload.source),
     cliVersion: normalizeOptionalString(
@@ -294,16 +306,6 @@ export async function parseSessionCatalog(
     latestAgentMessageExcerpt:
       latestAgentMessageExcerpt || responseAssistantExcerpt,
   };
-  const responseMessageTypes = new Set(responseMessages.map((item) => item.type));
-  const normalizedFallbackMessages = fallbackMessages.filter(
-    (item) => item.timestamp !== startedAt || !responseMessageTypes.has(item.type),
-  );
-
-  const timeline = dedupeTimelineDrafts([
-    ...normalizedFallbackMessages,
-    ...responseMessages,
-    ...toolCalls,
-  ]).map(stripTimelineDraft);
   const parsed = {
     summary,
     timeline,
@@ -550,6 +552,22 @@ function sortTimelineDrafts(left: { timestamp: string; order: number }, right: {
   }
 
   return left.order - right.order;
+}
+
+function latestTimelineTimestamp(
+  timeline: Pick<SessionTimelineItem, "timestamp">[],
+  fallback: string,
+) {
+  return timeline.reduce((latest, item) => {
+    const candidateTime = Date.parse(item.timestamp);
+    const latestTime = Date.parse(latest);
+
+    if (Number.isFinite(candidateTime) && candidateTime > latestTime) {
+      return item.timestamp;
+    }
+
+    return latest;
+  }, fallback);
 }
 
 function dedupeTimelineDrafts(

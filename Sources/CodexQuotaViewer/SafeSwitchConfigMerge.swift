@@ -13,7 +13,8 @@ enum RuntimeConfigMergeError: LocalizedError {
 
 func mergeRuntimeConfig(
     currentConfigData: Data?,
-    targetConfigData: Data?
+    targetConfigData: Data?,
+    preserveExistingProviderSections: Bool = true
 ) throws -> Data {
     let current: LightweightTOMLDocument
     let target: LightweightTOMLDocument
@@ -35,7 +36,16 @@ func mergeRuntimeConfig(
     }
 
     let filteredCurrentSections = current.sections.filter { section in
-        !targetSectionNames.contains(section.name)
+        guard !targetSectionNames.contains(section.name) else {
+            return false
+        }
+
+        if !preserveExistingProviderSections,
+           section.name.hasPrefix("model_providers.") {
+            return false
+        }
+
+        return true
     }
 
     var outputLines: [String] = []

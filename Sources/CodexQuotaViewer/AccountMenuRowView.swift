@@ -6,6 +6,8 @@ struct AccountMenuRowModel {
     let secondaryRemainingText: String
     let primaryResetText: String
     let secondaryResetText: String
+    let primaryRemainingColor: NSColor
+    let secondaryRemainingColor: NSColor
     let indicatorColor: NSColor
     let isCurrent: Bool
     let isEnabled: Bool
@@ -14,11 +16,11 @@ struct AccountMenuRowModel {
 
 @MainActor
 final class AccountMenuRowView: NSView {
-    static let minimumWidth: CGFloat = 372
+    static let minimumWidth: CGFloat = 408
     static let height: CGFloat = 52
     private static let cardInset: CGFloat = 3
     private static let horizontalPadding: CGFloat = 12
-    private static let quotaColumnWidth: CGFloat = 74
+    private static let quotaColumnWidth: CGFloat = 92
     private static let quotaColumnSpacing: CGFloat = 8
 
     private let cardView = NSView()
@@ -109,6 +111,8 @@ final class AccountMenuRowView: NSView {
         secondaryRemainingField.stringValue = model.secondaryRemainingText
         primaryResetField.stringValue = model.primaryResetText
         secondaryResetField.stringValue = model.secondaryResetText
+        primaryRemainingField.textColor = model.primaryRemainingColor
+        secondaryRemainingField.textColor = model.secondaryRemainingColor
         indicatorView.fillColor = model.indicatorColor
         nameField.font = .systemFont(ofSize: 13, weight: .regular)
         alphaValue = 1

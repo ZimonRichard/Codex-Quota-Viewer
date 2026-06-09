@@ -59,6 +59,8 @@ final class SwitchOrchestrator {
     private let store: ProfileStore
     private let backupManager: BackupManager
     private let rolloutSynchronizer: RolloutProviderSynchronizer
+    private let threadProviderRelabeler: LocalThreadProviderRelabeler
+    private let threadTitlePreserver: LocalThreadTitlePreserver
     private let repairClient: OfficialThreadRepairing
     private let desktopController: CodexDesktopControlling
     private let quotaChannelInvalidator: CodexRPCChannelInvalidating
@@ -74,6 +76,8 @@ final class SwitchOrchestrator {
         self.store = store
         self.backupManager = backupManager
         self.rolloutSynchronizer = rolloutSynchronizer
+        threadProviderRelabeler = LocalThreadProviderRelabeler()
+        threadTitlePreserver = LocalThreadTitlePreserver()
         self.repairClient = repairClient
         self.desktopController = desktopController
         self.quotaChannelInvalidator = quotaChannelInvalidator
@@ -85,13 +89,10 @@ final class SwitchOrchestrator {
             for: targetProfile,
             effectiveConfigData: effectiveConfig
         )
-        let rolloutFilesToUpdate = try rolloutSynchronizer.plannedUpdates(
-            in: [store.sessionsRootURL, store.archivedSessionsRootURL],
-            targetProvider: targetProviderID
-        )
+        let rolloutFilesToUpdate: [URL] = []
         let filesToBackup = deduplicatedStandardizedFileURLs(
-            store.protectedMutationFileURLs(
-                additionalFiles: rolloutFilesToUpdate + targetProfile.managedFileURLs
+            store.runtimeSwitchFileURLs(
+                additionalFiles: targetProfile.managedFileURLs
             )
         )
 
@@ -105,6 +106,7 @@ final class SwitchOrchestrator {
     }
 
     func perform(targetProfile: ProviderProfile) async throws -> SwitchOperationResult {
+        let userVisibleTitles = captureUserVisibleThreadTitles()
         let previouslyRunning = try await desktopController.closeIfRunning()
         var restorePoint: RestorePointManifest?
 
@@ -117,21 +119,26 @@ final class SwitchOrchestrator {
                 codexWasRunning: previouslyRunning
             )
             restorePoint = createdRestorePoint
+            preserveUserVisibleThreadTitles(userVisibleTitles, reason: "post-backup")
             let writer = ProtectedFileMutationContext(restorePoint: createdRestorePoint)
             let mergedConfig = try mergeRuntimeConfig(
                 currentConfigData: try store.currentConfigData(),
-                targetConfigData: try effectiveTargetConfigData(for: targetProfile)
+                targetConfigData: try effectiveTargetConfigData(for: targetProfile),
+                preserveExistingProviderSections: targetProfile.authMode != .chatgpt
             )
 
             try writer.write(targetProfile.runtimeMaterial.authData, to: store.currentAuthURL)
             try writer.write(mergedConfig, to: store.currentConfigURL)
-
             let rolloutResult = try rolloutSynchronizer.syncProviders(
                 in: [store.sessionsRootURL, store.archivedSessionsRootURL],
-                targetProvider: latestPreview.targetProviderID,
-                writer: writer
+                targetProvider: latestPreview.targetProviderID
+            )
+            _ = try threadProviderRelabeler.relabel(
+                databaseURL: store.stateDatabaseURL,
+                targetProvider: latestPreview.targetProviderID
             )
             let repairSummary = try await repairClient.rescanAndRepair()
+
             await quotaChannelInvalidator.invalidateAllReusableChannels()
             try await desktopController.reopenIfNeeded(previouslyRunning: previouslyRunning)
 
@@ -145,6 +152,7 @@ final class SwitchOrchestrator {
             if let restorePoint {
                 do {
                     try backupManager.restoreRestorePoint(restorePoint)
+                    try? resyncThreadsToCurrentRuntime()
                 } catch {
                     try? await desktopController.reopenIfNeeded(previouslyRunning: previouslyRunning)
                     throw SwitchOrchestratorError.automaticRollbackFailed
@@ -157,6 +165,7 @@ final class SwitchOrchestrator {
 
     func repairCurrentThreads() async throws -> RepairOperationResult {
         let filesToBackup = deduplicatedStandardizedFileURLs(store.protectedMutationFileURLs())
+        let userVisibleTitles = captureUserVisibleThreadTitles()
         let previouslyRunning = try await desktopController.closeIfRunning()
         var restorePoint: RestorePointManifest?
 
@@ -168,6 +177,7 @@ final class SwitchOrchestrator {
                 codexWasRunning: previouslyRunning
             )
             restorePoint = createdRestorePoint
+            preserveUserVisibleThreadTitles(userVisibleTitles, reason: "repair-post-backup")
             let repairSummary = try await repairClient.rescanAndRepair()
             try await desktopController.reopenIfNeeded(previouslyRunning: previouslyRunning)
             return RepairOperationResult(
@@ -238,6 +248,63 @@ final class SwitchOrchestrator {
         }
 
         throw SwitchOrchestratorError.missingProviderIdentifier(targetProfile.displayName)
+    }
+
+    private func resyncThreadsToCurrentRuntime() throws {
+        guard let providerID = try currentRuntimeProviderID() else {
+            return
+        }
+        _ = try rolloutSynchronizer.syncProviders(
+            in: [store.sessionsRootURL, store.archivedSessionsRootURL],
+            targetProvider: providerID
+        )
+        _ = try threadProviderRelabeler.relabel(
+            databaseURL: store.stateDatabaseURL,
+            targetProvider: providerID
+        )
+    }
+
+    private func currentRuntimeProviderID() throws -> String? {
+        let summary = parseRuntimeConfig(try store.currentConfigData())
+        if let providerID = summary.threadProviderID?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !providerID.isEmpty {
+            return providerID
+        }
+
+        if resolveAuthMode(authData: try store.currentAuthData()) == .chatgpt {
+            return "openai"
+        }
+
+        return nil
+    }
+
+    private func captureUserVisibleThreadTitles() -> [LocalThreadTitleCandidate] {
+        do {
+            return try threadTitlePreserver.captureCandidates(sessionIndexURL: store.sessionIndexURL)
+        } catch {
+            AppLog.safeSwitch.error("Failed to capture user-visible thread titles: \(error.localizedDescription, privacy: .public)")
+            return []
+        }
+    }
+
+    private func preserveUserVisibleThreadTitles(
+        _ candidates: [LocalThreadTitleCandidate],
+        reason: String
+    ) {
+        do {
+            let updatedCount = try threadTitlePreserver.preserveUserVisibleTitles(
+                stateDatabaseURL: store.stateDatabaseURL,
+                candidates: candidates
+            )
+            if updatedCount > 0 {
+                AppLog.safeSwitch.info(
+                    "Preserved user-visible thread titles count=\(updatedCount, privacy: .public) reason=\(reason, privacy: .public)"
+                )
+            }
+        } catch {
+            AppLog.safeSwitch.error("Failed to preserve user-visible thread titles reason=\(reason, privacy: .public): \(error.localizedDescription, privacy: .public)")
+        }
     }
 }
 

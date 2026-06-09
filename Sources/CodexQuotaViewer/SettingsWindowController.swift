@@ -17,6 +17,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
 
     private let tabView = NSTabView()
     private let generalView = SettingsGeneralView()
+    private let workPlanView = SettingsWorkPlanView()
     private let accountsView = SettingsAccountsView()
     private lazy var accountsTableController = makeAccountsTableController()
 
@@ -66,6 +67,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         generalItem.view = generalView
         tabView.addTabViewItem(generalItem)
 
+        let workPlanItem = NSTabViewItem(identifier: "work-plan")
+        workPlanItem.label = AppLocalization.localized(en: "Work Plan", zh: "计划")
+        workPlanItem.view = workPlanView
+        tabView.addTabViewItem(workPlanItem)
+
         let accountsItem = NSTabViewItem(identifier: "accounts")
         accountsItem.label = AppLocalization.localized(en: "Accounts", zh: "账号")
         accountsItem.view = accountsView
@@ -77,6 +83,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
 
         generalView.launchAtLoginCheckbox.target = self
         generalView.launchAtLoginCheckbox.action = #selector(controlChanged)
+        workPlanView.onChange = { [weak self] in
+            self?.controlChanged()
+        }
         accountsView.addChatGPTButton.target = self
         accountsView.addChatGPTButton.action = #selector(addChatGPTClicked)
         accountsView.addAPIButton.target = self
@@ -116,6 +125,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         selectItem(in: generalView.languagePopup, matching: settings.appLanguage.rawValue)
         selectItem(in: generalView.iconStylePopup, matching: settings.statusItemStyle.rawValue)
         generalView.launchAtLoginCheckbox.state = settings.launchAtLoginEnabled ? .on : .off
+        workPlanView.configure(with: settings.quotaWorkPlan)
     }
 
     private func applyAccountPanelState() {
@@ -144,12 +154,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     private func applyLocalizedText() {
         window?.title = AppLocalization.localized(en: "Settings", zh: "设置")
         generalView.applyLocalizedText()
+        workPlanView.applyLocalizedText()
         accountsView.applyLocalizedText()
 
         tabView.tabViewItems.first(where: { ($0.identifier as? String) == "general" })?.label =
             AppLocalization.localized(en: "General", zh: "通用")
         tabView.tabViewItems.first(where: { ($0.identifier as? String) == "accounts" })?.label =
             AppLocalization.localized(en: "Accounts", zh: "账号")
+        tabView.tabViewItems.first(where: { ($0.identifier as? String) == "work-plan" })?.label =
+            AppLocalization.localized(en: "Work Plan", zh: "计划")
     }
 
     private func configurePopup(_ popup: NSPopUpButton, values: [String]) {
@@ -192,6 +205,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         }
 
         settings.launchAtLoginEnabled = generalView.launchAtLoginCheckbox.state == .on
+        settings.quotaWorkPlan = workPlanView.selectedWorkPlan
         onSettingsChanged?(settings)
     }
 

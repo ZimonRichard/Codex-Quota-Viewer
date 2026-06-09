@@ -106,7 +106,12 @@ func makeTestProviderProfile(
     errorMessage: String? = nil,
     quotaFailureDisposition: QuotaFailureDisposition? = nil,
     runtimeMaterial: ProfileRuntimeMaterial? = nil,
-    quotaFetchedAt: Date? = nil
+    quotaFetchedAt: Date? = nil,
+    cpaPoolParentID: String? = nil,
+    cpaPoolParentDisplayName: String? = nil,
+    isCPAPoolCurrentRoute: Bool = false,
+    cpaPoolReasoningEffort: String? = nil,
+    cpaPoolStatusCode: Int? = nil
 ) -> ProviderProfile {
     let runtimeMaterial = runtimeMaterial ?? makeTestRuntimeMaterial(id: id, authMode: authMode)
 
@@ -127,7 +132,12 @@ func makeTestProviderProfile(
         isCurrent: isCurrent,
         managedFileURLs: [],
         lastUsedAt: lastUsedAt,
-        quotaFetchedAt: quotaFetchedAt
+        quotaFetchedAt: quotaFetchedAt,
+        cpaPoolParentID: cpaPoolParentID,
+        cpaPoolParentDisplayName: cpaPoolParentDisplayName,
+        isCPAPoolCurrentRoute: isCPAPoolCurrentRoute,
+        cpaPoolReasoningEffort: cpaPoolReasoningEffort,
+        cpaPoolStatusCode: cpaPoolStatusCode
     )
 }
 
@@ -184,6 +194,32 @@ func makeTestSnapshot(
         account: CodexAccount(type: "chatgpt", email: email, planType: "plus"),
         rateLimits: RateLimitSnapshot(
             limitId: nil,
+            limitName: nil,
+            primary: RateLimitWindow(
+                usedPercent: 100 - primaryRemaining,
+                windowDurationMins: 300,
+                resetsAt: 1_800_000_360
+            ),
+            secondary: RateLimitWindow(
+                usedPercent: 100 - secondaryRemaining,
+                windowDurationMins: 10_080,
+                resetsAt: 1_800_086_400
+            ),
+            planType: "plus"
+        ),
+        fetchedAt: fetchedAt
+    )
+}
+
+func makeTestAPISnapshot(
+    primaryRemaining: Double,
+    secondaryRemaining: Double,
+    fetchedAt: Date
+) -> CodexSnapshot {
+    CodexSnapshot(
+        account: CodexAccount(type: "apiKey", email: nil, planType: "plus"),
+        rateLimits: RateLimitSnapshot(
+            limitId: "premium",
             limitName: nil,
             primary: RateLimitWindow(
                 usedPercent: 100 - primaryRemaining,
@@ -298,4 +334,18 @@ func withExclusiveAppLocalization<T>(_ body: () throws -> T) rethrows -> T {
         localizationTestLock.unlock()
     }
     return try body()
+}
+
+func makeTestTimeText(_ date: Date) -> String {
+    let formatter = DateFormatter()
+    formatter.locale = AppLocalization.locale
+    formatter.dateFormat = "HH:mm"
+    return formatter.string(from: date)
+}
+
+func makeTestMonthDayText(_ date: Date) -> String {
+    let formatter = DateFormatter()
+    formatter.locale = AppLocalization.locale
+    formatter.setLocalizedDateFormatFromTemplate("MMM d")
+    return formatter.string(from: date)
 }

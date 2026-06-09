@@ -26,13 +26,23 @@ if ! command -v npm >/dev/null 2>&1; then
   exit 1
 fi
 
-NODE_BIN="$(node -p 'process.execPath')"
+if [[ -n "${SESSION_MANAGER_NODE_BIN:-}" ]]; then
+  NODE_BIN="$SESSION_MANAGER_NODE_BIN"
+else
+  NODE_BIN="$(node -p 'process.execPath')"
+fi
+
+if [[ ! -x "$NODE_BIN" ]]; then
+  echo "error: node runtime is not executable: $NODE_BIN" >&2
+  exit 1
+fi
+
 STAGING_SOURCE_DIR="$STAGING_DIR/source"
 APP_OUTPUT_DIR="$OUTPUT_DIR/App"
 RUNTIME_OUTPUT_DIR="$OUTPUT_DIR/Runtime"
 
 rm -rf "$STAGING_DIR" "$OUTPUT_DIR"
-mkdir -p "$STAGING_SOURCE_DIR" "$APP_OUTPUT_DIR" "$RUNTIME_OUTPUT_DIR/bin"
+mkdir -p "$STAGING_SOURCE_DIR" "$APP_OUTPUT_DIR" "$RUNTIME_OUTPUT_DIR/bin" "$RUNTIME_OUTPUT_DIR/lib"
 
 rsync -a \
   --delete \
@@ -54,5 +64,16 @@ cp package.json "$APP_OUTPUT_DIR/package.json"
 cp package-lock.json "$APP_OUTPUT_DIR/package-lock.json"
 cp "$NODE_BIN" "$RUNTIME_OUTPUT_DIR/bin/node"
 chmod +x "$RUNTIME_OUTPUT_DIR/bin/node"
+
+LIBNODE_NAME="$(otool -L "$NODE_BIN" | awk '$1 ~ /@rpath\/libnode.*\.dylib/ { print $1; exit }' | sed 's#@rpath/##')"
+if [[ -n "$LIBNODE_NAME" ]]; then
+  NODE_PREFIX="$(dirname "$(dirname "$NODE_BIN")")"
+  LIBNODE_SOURCE="$NODE_PREFIX/lib/$LIBNODE_NAME"
+  if [[ ! -f "$LIBNODE_SOURCE" ]]; then
+    echo "error: node runtime requires $LIBNODE_NAME, but it was not found at $LIBNODE_SOURCE" >&2
+    exit 1
+  fi
+  cp "$LIBNODE_SOURCE" "$RUNTIME_OUTPUT_DIR/lib/$LIBNODE_NAME"
+fi
 
 echo "Bundled session manager prepared at: $OUTPUT_DIR"

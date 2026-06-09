@@ -44,6 +44,40 @@ func mergeRuntimeConfigPreservesUserSettingsAndReplacesProviderBlocks() throws {
     }
 
 @Test
+func mergeRuntimeConfigCanDropExistingProviderSectionsForOfficialChatGPTRuntime() throws {
+    let current = """
+    personality = "pragmatic"
+    model_provider = "custom"
+
+    [model_providers.custom]
+    name = "custom"
+    base_url = "http://127.0.0.1:3001/v1"
+
+    [mcp_servers.demo]
+    command = "demo"
+    """
+
+    let target = """
+    model_provider = "openai"
+    model = "gpt-5.5"
+    """
+
+    let merged = try mergeRuntimeConfig(
+        currentConfigData: Data(current.utf8),
+        targetConfigData: Data(target.utf8),
+        preserveExistingProviderSections: false
+    )
+
+    let text = try merged.utf8String()
+    #expect(text.contains("personality = \"pragmatic\""))
+    #expect(text.contains("model_provider = \"openai\""))
+    #expect(text.contains("model = \"gpt-5.5\""))
+    #expect(text.contains("[mcp_servers.demo]"))
+    #expect(text.contains("[model_providers.custom]") == false)
+    #expect(text.contains("127.0.0.1:3001") == false)
+}
+
+@Test
 func buildProviderProfileCanonicalizesOpenAICompatibleAPIProfileToOpenAI() throws {
         let runtime = ProfileRuntimeMaterial(
             authData: Data(#"{"OPENAI_API_KEY":"sk-test"}"#.utf8),
@@ -136,6 +170,63 @@ func localThreadSyncStatusLabelsAndDetailsFollowActiveLanguage() {
         #expect(repair.label == "需要修复")
         #expect(repair.detail == "预期 openai · Rollout legacy:2 · Threads legacy:2")
     }
+}
+
+@Test
+func localThreadTitlePreserverPromotesUserVisibleTitleWhenSQLiteStillUsesFirstMessage() throws {
+    let harness = try makeHarness()
+    let databaseURL = harness.codexHomeURL.appendingPathComponent("state_5.sqlite")
+    let sessionIndexURL = harness.codexHomeURL.appendingPathComponent("session_index.jsonl")
+    try seedThreadStateDatabase(
+        databaseURL,
+        id: "thread-title-preserve",
+        title: "原始首问",
+        firstUserMessage: "原始首问",
+        modelProvider: "openai"
+    )
+    try writeSessionIndexEntry(
+        sessionIndexURL,
+        id: "thread-title-preserve",
+        title: "手动新标题",
+        updatedAt: "2026-06-08T00:01:00.000Z"
+    )
+
+    let updatedCount = try LocalThreadTitlePreserver().preserveUserVisibleTitles(
+        stateDatabaseURL: databaseURL,
+        sessionIndexURL: sessionIndexURL
+    )
+
+    #expect(updatedCount == 1)
+    #expect(try readThreadTitle(databaseURL, id: "thread-title-preserve") == "手动新标题")
+    #expect(try readThreadUpdatedAt(databaseURL, id: "thread-title-preserve") == "1780876860")
+}
+
+@Test
+func localThreadTitlePreserverDoesNotOverwriteExistingManualSQLiteTitle() throws {
+    let harness = try makeHarness()
+    let databaseURL = harness.codexHomeURL.appendingPathComponent("state_5.sqlite")
+    let sessionIndexURL = harness.codexHomeURL.appendingPathComponent("session_index.jsonl")
+    try seedThreadStateDatabase(
+        databaseURL,
+        id: "thread-title-preserve-manual",
+        title: "SQLite 手动标题",
+        firstUserMessage: "原始首问",
+        modelProvider: "openai"
+    )
+    try writeSessionIndexEntry(
+        sessionIndexURL,
+        id: "thread-title-preserve-manual",
+        title: "旧 recent 标题",
+        updatedAt: "2026-06-08T00:01:00.000Z"
+    )
+
+    let updatedCount = try LocalThreadTitlePreserver().preserveUserVisibleTitles(
+        stateDatabaseURL: databaseURL,
+        sessionIndexURL: sessionIndexURL
+    )
+
+    #expect(updatedCount == 0)
+    #expect(try readThreadTitle(databaseURL, id: "thread-title-preserve-manual") == "SQLite 手动标题")
 }
 
 @Test
@@ -428,8 +519,8 @@ func rolloutProviderSynchronizerRewritesSessionMetaAcrossRoots() throws {
         #expect(try readSessionMetaProvider(from: archivedURL) == "openai")
     }
 
-@Test
-func rolloutProviderSynchronizerReadsProviderFromFirstLineOnly() throws {
+    @Test
+    func rolloutProviderSynchronizerReadsProviderFromFirstLineOnly() throws {
         let harness = try makeHarness()
         let sessionsRoot = harness.codexHomeURL.appendingPathComponent("sessions", isDirectory: true)
         let rolloutURL = try writeRolloutData(
@@ -442,6 +533,61 @@ func rolloutProviderSynchronizerReadsProviderFromFirstLineOnly() throws {
         let synchronizer = RolloutProviderSynchronizer()
 
         #expect(try synchronizer.sessionMetaProvider(in: rolloutURL) == "openai")
+    }
+
+    @Test
+    func rolloutProviderSynchronizerRewritesFirstLineWithoutDecodingBinaryTail() throws {
+        let harness = try makeHarness()
+        let sessionsRoot = harness.codexHomeURL.appendingPathComponent("sessions", isDirectory: true)
+        let binaryTail = Data([0x0A, 0xFF, 0xFE, 0xFD])
+        let rolloutURL = try writeRolloutData(
+            under: sessionsRoot,
+            id: "binary-tail-rewrite",
+            provider: "legacy",
+            trailingData: binaryTail
+        )
+
+        let synchronizer = RolloutProviderSynchronizer()
+        let result = try synchronizer.syncProviders(
+            in: [sessionsRoot],
+            targetProvider: "openai"
+        )
+        let data = try Data(contentsOf: rolloutURL)
+
+        #expect(result.updatedFiles.map { $0.standardizedFileURL.path } == [rolloutURL.standardizedFileURL.path])
+        #expect(try synchronizer.sessionMetaProvider(in: rolloutURL) == "openai")
+        #expect(data.suffix(binaryTail.count) == binaryTail)
+    }
+
+    @Test
+    func rolloutProviderSynchronizerPreservesFileModificationTimeWhenRewritingProvider() throws {
+        let harness = try makeHarness()
+        let sessionsRoot = harness.codexHomeURL.appendingPathComponent("sessions", isDirectory: true)
+        let rolloutURL = try writeRollout(
+            under: sessionsRoot,
+            id: "stable-mtime-rewrite",
+            provider: "legacy"
+        )
+        let originalModificationDate = Date(timeIntervalSince1970: 1_700_123_456)
+        try FileManager.default.setAttributes(
+            [.modificationDate: originalModificationDate],
+            ofItemAtPath: rolloutURL.path
+        )
+        let beforeAttributes = try FileManager.default.attributesOfItem(atPath: rolloutURL.path)
+        let beforeModificationDate = try #require(beforeAttributes[.modificationDate] as? Date)
+
+        let synchronizer = RolloutProviderSynchronizer()
+        let result = try synchronizer.syncProviders(
+            in: [sessionsRoot],
+            targetProvider: "openai"
+        )
+
+        let afterAttributes = try FileManager.default.attributesOfItem(atPath: rolloutURL.path)
+        let afterModificationDate = try #require(afterAttributes[.modificationDate] as? Date)
+
+        #expect(result.updatedFiles.map { $0.standardizedFileURL.path } == [rolloutURL.standardizedFileURL.path])
+        #expect(try synchronizer.sessionMetaProvider(in: rolloutURL) == "openai")
+        #expect(abs(afterModificationDate.timeIntervalSince(beforeModificationDate)) < 1)
     }
 
 @Test
@@ -466,7 +612,7 @@ func rolloutProviderSynchronizerSkipsWholeFileDecodeWhenProviderAlreadyMatchesTa
 
 @MainActor
 @Test
-func switchOrchestratorAppliesRuntimeSynchronizesRolloutsAndRequestsRepair() async throws {
+    func switchOrchestratorAppliesRuntimeAndRepairsThreadProviderMetadata() async throws {
         let harness = try makeHarness()
         try seedCurrentRuntime(in: harness, provider: "legacy")
         let rolloutURL = try writeRollout(
@@ -522,12 +668,14 @@ func switchOrchestratorAppliesRuntimeSynchronizesRolloutsAndRequestsRepair() asy
         ).utf8String()
         #expect(mergedConfig.contains("personality = \"pragmatic\""))
         #expect(mergedConfig.contains("model_provider = \"openai\""))
+        #expect(mergedConfig.contains("[model_providers.legacy]") == false)
         #expect(result.restorePoint.files.contains { $0.originalPath.hasSuffix("/auth.json") })
+        #expect(result.restorePoint.files.contains { $0.originalPath == rolloutURL.standardizedFileURL.path } == false)
     }
 
-@MainActor
-@Test
-func switchOrchestratorAutomaticallyRollsBackWhenRepairFailsAfterFilesChange() async throws {
+    @MainActor
+    @Test
+    func switchOrchestratorRollsBackRuntimeWhenThreadRepairFails() async throws {
         let harness = try makeHarness()
         try seedCurrentRuntime(in: harness, provider: "legacy")
         let rolloutURL = try writeRollout(
@@ -563,19 +711,23 @@ func switchOrchestratorAutomaticallyRollsBackWhenRepairFailsAfterFilesChange() a
             isCurrent: false
         )
 
-        await #expect(throws: NSError.self) {
+        do {
             _ = try await orchestrator.perform(targetProfile: target)
+            Issue.record("Expected repair failure to abort the switch.")
+        } catch {
+            #expect((error as NSError).domain == "SafeSwitchCoreTests")
         }
 
         #expect(try Data(contentsOf: harness.codexHomeURL.appendingPathComponent("auth.json")).utf8String()
             == "{\"auth_mode\":\"chatgpt\",\"last_refresh\":\"2026-03-31T00:00:00Z\"}")
         #expect(try readSessionMetaProvider(from: rolloutURL) == "legacy")
+        #expect(repairer.invocationCount == 1)
         #expect(desktop.reopenInvocationCount == 1)
     }
 
-@MainActor
-@Test
-func switchOrchestratorRecomputesRolloutPreviewAfterClosingCodex() async throws {
+    @MainActor
+    @Test
+    func switchOrchestratorSyncsLateRolloutsWithoutBackingThemUp() async throws {
         let harness = try makeHarness()
         try seedCurrentRuntime(in: harness, provider: "legacy")
         let originalRolloutURL = try writeRollout(
@@ -628,7 +780,8 @@ func switchOrchestratorRecomputesRolloutPreviewAfterClosingCodex() async throws 
         #expect(result.updatedRolloutCount == 2)
         #expect(try readSessionMetaProvider(from: originalRolloutURL) == "openai")
         #expect(try readSessionMetaProvider(from: lateRolloutURL) == "openai")
-        #expect(result.restorePoint.files.contains { $0.originalPath == lateRolloutURL.path })
+        #expect(result.restorePoint.files.contains { $0.originalPath == originalRolloutURL.path } == false)
+        #expect(result.restorePoint.files.contains { $0.originalPath == lateRolloutURL.path } == false)
     }
 
 @MainActor
@@ -695,6 +848,72 @@ func switchOrchestratorPreservesWorkingOpenAICompatibleAPIConfigBeforeSwitch() a
         #expect(mergedConfig.contains("base_url = \"https://shell.wyzai.top/v1\""))
         #expect(mergedConfig.contains("model = \"gpt-5.4\""))
     }
+
+@MainActor
+@Test
+func switchOrchestratorPreservesUserVisibleThreadTitleAcrossCodexClose() async throws {
+    let harness = try makeHarness()
+    try seedCurrentRuntime(in: harness, provider: "legacy")
+    let databaseURL = harness.codexHomeURL.appendingPathComponent("state_5.sqlite")
+    let sessionIndexURL = harness.codexHomeURL.appendingPathComponent("session_index.jsonl")
+    try seedThreadStateDatabase(
+        databaseURL,
+        id: "thread-close-title",
+        title: "原始首问",
+        firstUserMessage: "原始首问",
+        modelProvider: "legacy"
+    )
+    try writeSessionIndexEntry(
+        sessionIndexURL,
+        id: "thread-close-title",
+        title: "用户刚改的新标题",
+        updatedAt: "2026-06-08T00:01:00.000Z"
+    )
+
+    let repairer = RepairerSpy {
+        let title = try readThreadTitle(databaseURL, id: "thread-close-title")
+        #expect(title == "用户刚改的新标题")
+    }
+    let desktop = DesktopControllerSpy(isRunning: true) {
+        try updateThreadTitle(databaseURL, id: "thread-close-title", title: "原始首问")
+        try writeSessionIndexEntry(
+            sessionIndexURL,
+            id: "thread-close-title",
+            title: "原始首问",
+            updatedAt: "2026-06-08T00:02:00.000Z"
+        )
+    }
+    let orchestrator = makeOrchestrator(
+        harness: harness,
+        repairer: repairer,
+        desktop: desktop
+    )
+
+    let target = ProviderProfile(
+        id: "target-openai",
+        displayName: "Target OpenAI",
+        source: .vault,
+        runtimeMaterial: ProfileRuntimeMaterial(
+            authData: Data("{\"auth_mode\":\"chatgpt\"}".utf8),
+            configData: Data("model_provider = \"openai\"\nmodel = \"gpt-5.4\"\n".utf8)
+        ),
+        authMode: .chatgpt,
+        providerID: "openai",
+        providerDisplayName: "OpenAI",
+        baseURLHost: nil,
+        model: "gpt-5.4",
+        snapshot: nil,
+        healthStatus: .healthy,
+        errorMessage: nil,
+        isCurrent: false
+    )
+
+    _ = try await orchestrator.perform(targetProfile: target)
+
+    #expect(desktop.closeInvocationCount == 1)
+    #expect(repairer.invocationCount == 1)
+    #expect(try readThreadTitle(databaseURL, id: "thread-close-title") == "用户刚改的新标题")
+}
 
 @MainActor
 @Test
@@ -859,16 +1078,141 @@ private func readSessionMetaProvider(from fileURL: URL) throws -> String {
     return provider
 }
 
+private func seedThreadStateDatabase(
+    _ databaseURL: URL,
+    id: String,
+    title: String,
+    firstUserMessage: String,
+    modelProvider: String
+) throws {
+    try FileManager.default.createDirectory(
+        at: databaseURL.deletingLastPathComponent(),
+        withIntermediateDirectories: true
+    )
+    try runSQLite(
+        databaseURL,
+        sql: """
+        create table if not exists threads (
+          id text primary key,
+          title text not null,
+          first_user_message text,
+          updated_at integer,
+          model_provider text
+        );
+        insert or replace into threads (id, title, first_user_message, updated_at, model_provider)
+        values (
+          \(sqlLiteral(id)),
+          \(sqlLiteral(title)),
+          \(sqlLiteral(firstUserMessage)),
+          1780876860,
+          \(sqlLiteral(modelProvider))
+        );
+        """
+    )
+}
+
+private func writeSessionIndexEntry(
+    _ sessionIndexURL: URL,
+    id: String,
+    title: String,
+    updatedAt: String
+) throws {
+    try FileManager.default.createDirectory(
+        at: sessionIndexURL.deletingLastPathComponent(),
+        withIntermediateDirectories: true
+    )
+    let entry: [String: String] = [
+        "id": id,
+        "thread_name": title,
+        "updated_at": updatedAt,
+    ]
+    let data = try JSONSerialization.data(withJSONObject: entry, options: [.sortedKeys])
+    var payload = data
+    payload.append(0x0A)
+    try payload.write(to: sessionIndexURL, options: .atomic)
+}
+
+private func readThreadTitle(_ databaseURL: URL, id: String) throws -> String {
+    try runSQLite(
+        databaseURL,
+        sql: "select title from threads where id = \(sqlLiteral(id));"
+    )
+    .trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+private func readThreadUpdatedAt(_ databaseURL: URL, id: String) throws -> String {
+    try runSQLite(
+        databaseURL,
+        sql: "select updated_at from threads where id = \(sqlLiteral(id));"
+    )
+    .trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+private func updateThreadTitle(_ databaseURL: URL, id: String, title: String) throws {
+    try runSQLite(
+        databaseURL,
+        sql: """
+        update threads
+        set title = \(sqlLiteral(title)),
+            updated_at = 1780876920
+        where id = \(sqlLiteral(id));
+        """
+    )
+}
+
+@discardableResult
+private func runSQLite(_ databaseURL: URL, sql: String) throws -> String {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
+    process.arguments = [databaseURL.path]
+
+    let inputPipe = Pipe()
+    let outputPipe = Pipe()
+    let errorPipe = Pipe()
+    process.standardInput = inputPipe
+    process.standardOutput = outputPipe
+    process.standardError = errorPipe
+
+    try process.run()
+    inputPipe.fileHandleForWriting.write(Data(sql.utf8))
+    inputPipe.fileHandleForWriting.closeFile()
+    process.waitUntilExit()
+
+    let output = String(data: outputPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    let errorOutput = String(data: errorPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+
+    guard process.terminationStatus == 0 else {
+        throw NSError(
+            domain: "SafeSwitchCoreTests.sqlite",
+            code: Int(process.terminationStatus),
+            userInfo: [NSLocalizedDescriptionKey: errorOutput.isEmpty ? output : errorOutput]
+        )
+    }
+
+    return output
+}
+
+private func sqlLiteral(_ value: String) -> String {
+    "'\(value.replacingOccurrences(of: "'", with: "''"))'"
+}
+
 private final class RepairerSpy: OfficialThreadRepairing {
     private(set) var invocationCount = 0
     private let error: Error?
+    private let onRepair: (() throws -> Void)?
 
-    init(error: Error? = nil) {
+    init(error: Error? = nil, onRepair: (() throws -> Void)? = nil) {
         self.error = error
+        self.onRepair = onRepair
+    }
+
+    convenience init(onRepair: @escaping () throws -> Void) {
+        self.init(error: nil, onRepair: onRepair)
     }
 
     func rescanAndRepair() async throws -> OfficialRepairSummary {
         invocationCount += 1
+        try onRepair?()
         if let error {
             throw error
         }

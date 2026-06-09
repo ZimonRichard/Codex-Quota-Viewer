@@ -335,6 +335,174 @@ func allAccountsMenuItemPresentationUsesCurrentCheckmarkAndDirectSwitchForOthers
 
 @MainActor
 @Test
+func quotaOverviewMenuShowsCPAPoolMembersOnAPIParentRow() throws {
+    try withExclusiveAppLocalization {
+        AppLocalization.setPreferredLanguage(.en, preferredLanguages: ["en-US"])
+        let now = Date(timeIntervalSince1970: 1_800_000_180)
+        let apiParent = makeTestProviderProfile(
+            id: "api-parent",
+            displayName: "svip",
+            authMode: .apiKey,
+            snapshot: makeTestAPISnapshot(
+                primaryRemaining: 51,
+                secondaryRemaining: 8,
+                fetchedAt: now
+            ),
+            isCurrent: true,
+            lastUsedAt: now
+        )
+        let routedMember = makeTestProviderProfile(
+            id: "api-parent::cpa::codex-plus-2",
+            displayName: "codex_plus_2",
+            authMode: .apiKey,
+            snapshot: makeTestAPISnapshot(
+                primaryRemaining: 51,
+                secondaryRemaining: 8,
+                fetchedAt: now
+            ),
+            source: .cpaPoolMember,
+            lastUsedAt: now,
+            cpaPoolParentID: apiParent.id,
+            cpaPoolParentDisplayName: apiParent.displayName,
+            isCPAPoolCurrentRoute: true,
+            cpaPoolReasoningEffort: "xhigh",
+            cpaPoolStatusCode: 200
+        )
+        let exhaustedMember = makeTestProviderProfile(
+            id: "api-parent::cpa::codex-plus-1",
+            displayName: "codex_plus_1",
+            authMode: .apiKey,
+            snapshot: makeTestAPISnapshot(
+                primaryRemaining: 0,
+                secondaryRemaining: 37,
+                fetchedAt: now.addingTimeInterval(-60)
+            ),
+            source: .cpaPoolMember,
+            lastUsedAt: now.addingTimeInterval(-60),
+            cpaPoolParentID: apiParent.id,
+            cpaPoolParentDisplayName: apiParent.displayName,
+            cpaPoolReasoningEffort: "xhigh",
+            cpaPoolStatusCode: 429
+        )
+        let state = buildQuotaOverviewState(
+            currentProfile: apiParent,
+            vaultProfiles: [routedMember, exhaustedMember],
+            refreshIntervalPreset: .fiveMinutes,
+            now: now
+        )
+
+        let items = buildQuotaOverviewMenuItems(
+            quotaOverviewState: state,
+            refreshIntervalPreset: .fiveMinutes,
+            isPerformingSafeSwitchOperation: false,
+            target: nil,
+            activateSavedAccountAction: #selector(NSResponder.cancelOperation(_:))
+        )
+
+        let apiParentItem = try #require(items.first { $0.title == "svip" })
+        let detailsMenu = try #require(apiParentItem.submenu)
+        let currentItem = try #require(detailsMenu.items.first)
+        let poolHeader = try #require(detailsMenu.items.dropFirst(2).first)
+        let routedItem = try #require(detailsMenu.items.dropFirst(3).first)
+        let exhaustedItem = try #require(detailsMenu.items.dropFirst(4).first)
+
+        #expect(apiParentItem.isEnabled == true)
+        #expect(detailsMenu.items.count == 5)
+        #expect(currentItem.title == "Current API Account")
+        #expect(currentItem.isEnabled == false)
+        #expect(detailsMenu.items[1].isSeparatorItem == true)
+        #expect(poolHeader.title == "CPA Pool Members")
+        #expect(poolHeader.isEnabled == false)
+        let primaryReset = makeTestTimeText(Date(timeIntervalSince1970: 1_800_000_360))
+        let secondaryReset = makeTestMonthDayText(Date(timeIntervalSince1970: 1_800_086_400))
+        let routedUpdated = makeTestTimeText(now)
+        let exhaustedUpdated = makeTestTimeText(now.addingTimeInterval(-60))
+        #expect(routedItem.title == "codex_plus_2 · current route · gpt-5.4 · xhigh · HTTP 200 · 5h 51% / \(primaryReset) · 1w 8% / \(secondaryReset) · updated \(routedUpdated)")
+        #expect(routedItem.isEnabled == false)
+        #expect(routedItem.action == nil)
+        #expect(routedItem.state == .off)
+        #expect(exhaustedItem.title == "codex_plus_1 · standby · gpt-5.4 · xhigh · HTTP 429 · 5h 0% / \(primaryReset) · 1w 37% / \(secondaryReset) · updated \(exhaustedUpdated)")
+        #expect(exhaustedItem.isEnabled == false)
+
+        let allAccountsItem = try #require(items.last)
+        let allAccountsMenu = try #require(allAccountsItem.submenu)
+        let allAccountsAPIParentItem = try #require(allAccountsMenu.items.first { $0.title.hasPrefix("svip") })
+        #expect(allAccountsAPIParentItem.submenu == nil)
+    }
+}
+
+@MainActor
+@Test
+func quotaOverviewAPIPoolHoverMenuOffersSwitchActionForNonCurrentParent() throws {
+    try withExclusiveAppLocalization {
+        AppLocalization.setPreferredLanguage(.en, preferredLanguages: ["en-US"])
+        let now = Date(timeIntervalSince1970: 1_800_000_190)
+        let current = makeTestProviderProfile(
+            id: "current",
+            displayName: "current@example.com",
+            authMode: .chatgpt,
+            snapshot: makeTestSnapshot(
+                email: "current@example.com",
+                primaryRemaining: 81,
+                secondaryRemaining: 79,
+                fetchedAt: now
+            ),
+            isCurrent: true,
+            lastUsedAt: now
+        )
+        let apiParent = makeTestProviderProfile(
+            id: "api-parent",
+            displayName: "svip",
+            authMode: .apiKey,
+            snapshot: makeTestAPISnapshot(
+                primaryRemaining: 51,
+                secondaryRemaining: 8,
+                fetchedAt: now
+            ),
+            lastUsedAt: now.addingTimeInterval(-10)
+        )
+        let routedMember = makeTestProviderProfile(
+            id: "api-parent::cpa::codex-plus-2",
+            displayName: "codex_plus_2",
+            authMode: .apiKey,
+            snapshot: makeTestAPISnapshot(
+                primaryRemaining: 51,
+                secondaryRemaining: 8,
+                fetchedAt: now
+            ),
+            source: .cpaPoolMember,
+            cpaPoolParentID: apiParent.id,
+            cpaPoolParentDisplayName: apiParent.displayName,
+            isCPAPoolCurrentRoute: true
+        )
+        let state = buildQuotaOverviewState(
+            currentProfile: current,
+            vaultProfiles: [apiParent, routedMember],
+            refreshIntervalPreset: .fiveMinutes,
+            now: now
+        )
+
+        let items = buildQuotaOverviewMenuItems(
+            quotaOverviewState: state,
+            refreshIntervalPreset: .fiveMinutes,
+            isPerformingSafeSwitchOperation: false,
+            target: nil,
+            activateSavedAccountAction: #selector(NSResponder.cancelOperation(_:))
+        )
+
+        let apiParentItem = try #require(items.first { $0.title == "svip" })
+        let switchItem = try #require(apiParentItem.submenu?.items.first)
+
+        #expect(apiParentItem.action != #selector(NSResponder.cancelOperation(_:)))
+        #expect(switchItem.title == "Switch to svip")
+        #expect(switchItem.isEnabled == true)
+        #expect(switchItem.action == #selector(NSResponder.cancelOperation(_:)))
+        #expect(switchItem.representedObject as? String == "api-parent")
+    }
+}
+
+@MainActor
+@Test
 func quotaOverviewMenuRowsUseCustomViewAndShowDualQuotaColumns() throws {
     try withExclusiveAppLocalization {
         AppLocalization.setPreferredLanguage(.en, preferredLanguages: ["en-US"])
@@ -396,7 +564,7 @@ func quotaOverviewMenuRowsUseCustomViewAndShowDualQuotaColumns() throws {
 
         #expect(findLabel(in: rowView) { $0 == "current@example.com" } != nil)
         #expect(findLabel(in: rowView) { $0 == "5h 81%" } != nil)
-        #expect(findLabel(in: rowView) { $0 == "1w 79%" } != nil)
+        #expect(findLabel(in: rowView) { $0.hasPrefix("1w 79%/") } != nil)
         #expect(findLabel(in: rowView) { $0 == "5h \(timeFormatter.string(from: Date(timeIntervalSince1970: 1_800_000_360)))" } != nil)
         #expect(findLabel(in: rowView) { $0 == "1w \(dateFormatter.string(from: Date(timeIntervalSince1970: 1_800_086_400)))" } != nil)
         #expect((rowView.accessibilityLabel() ?? "").contains("Current account"))
@@ -467,7 +635,7 @@ func quotaOverviewMenuRowsPadWeeklyOnlyAccountsWithFiveHourPlaceholder() throws 
         dateFormatter.setLocalizedDateFormatFromTemplate("MMM d")
 
         #expect(findLabel(in: rowView) { $0 == "5h -" } != nil)
-        #expect(findLabel(in: rowView) { $0 == "1w 63%" } != nil)
+        #expect(findLabel(in: rowView) { $0.hasPrefix("1w 63%/") } != nil)
         #expect(findLabel(in: rowView) { $0 == "1w \(dateFormatter.string(from: Date(timeIntervalSince1970: 1_800_086_400)))" } != nil)
     }
 }
@@ -533,6 +701,51 @@ func statusItemPresentationBuildsMeterAndTextModesOutsideAppController() {
         }
 
         #expect(text.visualContent == .brand)
+    }
+}
+
+@Test
+func statusItemPresentationBuildsMeterForAPIQuotaSnapshot() {
+    withExclusiveAppLocalization {
+        AppLocalization.setPreferredLanguage(.en, preferredLanguages: ["en-US"])
+        let now = Date(timeIntervalSince1970: 1_800_000_230)
+        let snapshot = makeTestAPISnapshot(
+            primaryRemaining: 23,
+            secondaryRemaining: 85,
+            fetchedAt: now
+        )
+
+        let meter = buildStatusItemPresentation(
+            snapshot: snapshot,
+            apiKeyDetails: nil,
+            statusItemStyle: .meter,
+            refreshIntervalPreset: .fiveMinutes,
+            isRefreshing: false,
+            currentError: nil,
+            lastRefreshAt: now,
+            now: now
+        )
+        let text = buildStatusItemPresentation(
+            snapshot: snapshot,
+            apiKeyDetails: nil,
+            statusItemStyle: .text,
+            refreshIntervalPreset: .fiveMinutes,
+            isRefreshing: false,
+            currentError: nil,
+            lastRefreshAt: now,
+            now: now
+        )
+
+        switch meter.visualContent {
+        case .brand:
+            Issue.record("Expected a meter visual for an API quota snapshot with rate-limit windows.")
+        case .meter(let primaryRemaining, let secondaryRemaining, let state):
+            #expect(abs(primaryRemaining - 0.23) < 0.0001)
+            #expect(abs(secondaryRemaining - 0.85) < 0.0001)
+            #expect(state == .normal)
+        }
+
+        #expect(text.title == "5h23% 1w85%")
     }
 }
 
@@ -698,7 +911,59 @@ func quotaOverviewMenuItemsReuseExistingRowViewsWhenShapeMatches() throws {
         #expect(didReuse)
         #expect(updatedRowView === firstRowView)
         #expect(findLabel(in: updatedRowView) { $0 == "5h 64%" } != nil)
-        #expect(findLabel(in: updatedRowView) { $0 == "1w 52%" } != nil)
+        #expect(findLabel(in: updatedRowView) { $0.hasPrefix("1w 52%/") } != nil)
+    }
+}
+
+@MainActor
+@Test
+func quotaOverviewMenuRowsColorWeeklyPaceOverspend() throws {
+    try withExclusiveAppLocalization {
+        AppLocalization.setPreferredLanguage(.en, preferredLanguages: ["en-US"])
+        let now = Date()
+        let weeklyReset = now.addingTimeInterval(10_080 * 60 * 0.84)
+        let profile = makeTestProviderProfile(
+            id: "current",
+            displayName: "current@example.com",
+            authMode: .chatgpt,
+            snapshot: CodexSnapshot(
+                account: CodexAccount(type: "chatgpt", email: "current@example.com", planType: "plus"),
+                rateLimits: RateLimitSnapshot(
+                    limitId: nil,
+                    limitName: nil,
+                    primary: RateLimitWindow(
+                        usedPercent: 19,
+                        windowDurationMins: 300,
+                        resetsAt: 1_800_000_360
+                    ),
+                    secondary: RateLimitWindow(
+                        usedPercent: 24,
+                        windowDurationMins: 10_080,
+                        resetsAt: Int(weeklyReset.timeIntervalSince1970)
+                    ),
+                    planType: "plus"
+                ),
+                fetchedAt: now
+            ),
+            isCurrent: true,
+            lastUsedAt: now
+        )
+        let state = buildQuotaOverviewState(
+            currentProfile: profile,
+            vaultProfiles: [],
+            refreshIntervalPreset: .fiveMinutes,
+            now: now
+        )
+        let items = buildQuotaOverviewMenuItems(
+            quotaOverviewState: state,
+            refreshIntervalPreset: .fiveMinutes,
+            isPerformingSafeSwitchOperation: false,
+            target: nil,
+            activateSavedAccountAction: #selector(NSResponder.cancelOperation(_:))
+        )
+        let rowView = try #require(items.first?.view as? AccountMenuRowView)
+        let weeklyLabel = try #require(findLabel(in: rowView) { $0 == "1w 76%/84%" })
+        #expect(weeklyLabel.textColor == .systemRed)
     }
 }
 
@@ -908,9 +1173,10 @@ func settingsWindowControllerUsesDedicatedTabViews() throws {
     let contentView = try #require(controller.window?.contentView)
     let tabView = try #require(findView(ofType: NSTabView.self, in: contentView))
 
-    #expect(tabView.tabViewItems.count == 2)
+    #expect(tabView.tabViewItems.count == 3)
     #expect(tabView.tabViewItems[0].view is SettingsGeneralView)
-    #expect(tabView.tabViewItems[1].view is SettingsAccountsView)
+    #expect(tabView.tabViewItems[1].view is SettingsWorkPlanView)
+    #expect(tabView.tabViewItems[2].view is SettingsAccountsView)
 }
 
 @MainActor

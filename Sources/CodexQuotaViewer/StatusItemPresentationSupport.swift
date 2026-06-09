@@ -29,7 +29,8 @@ func buildStatusItemPresentation(
         snapshot: snapshot,
         apiKeyDetails: apiKeyDetails,
         isRefreshing: isRefreshing,
-        currentError: currentError
+        currentError: currentError,
+        now: now
     )
     let isStale = isSnapshotDataStale(
         lastRefreshAt: lastRefreshAt,
@@ -42,10 +43,10 @@ func buildStatusItemPresentation(
     case .text:
         visualContent = .brand
     case .meter:
-        if snapshot?.account.type == "apiKey" {
+        let windows = quotaDisplayWindows(from: snapshot, now: now)
+        if snapshot?.account.type == "apiKey" && windows.isEmpty {
             visualContent = .brand
         } else {
-            let windows = quotaDisplayWindows(from: snapshot)
             let primaryRemaining = windows.first?.window.remainingPercent ?? 0
             let secondaryRemaining = windows.dropFirst().first?.window.remainingPercent ?? 0
             let state: MeterIconState
@@ -111,14 +112,15 @@ func statusItemSummaryText(
     snapshot: CodexSnapshot?,
     apiKeyDetails: APIKeyProfileDetails?,
     isRefreshing: Bool,
-    currentError: String?
+    currentError: String?,
+    now: Date = Date()
 ) -> String {
     if let snapshot {
-        if snapshot.account.type == "apiKey" {
+        let windows = quotaDisplayWindows(from: snapshot, now: now)
+        if snapshot.account.type == "apiKey" && windows.isEmpty {
             return apiKeyStatusTexts(details: apiKeyDetails).0
         }
 
-        let windows = quotaDisplayWindows(from: snapshot)
         guard !windows.isEmpty else {
             return AppLocalization.statusPlaceholderSummary()
         }

@@ -177,6 +177,20 @@ final class ProfileStore {
         ] + additionalFiles
     }
 
+    func runtimeSwitchFileURLs(additionalFiles: [URL] = []) -> [URL] {
+        [
+            currentAuthURL,
+            currentConfigURL,
+            settingsURL,
+            sessionManagerUIConfigURL,
+            accountsIndexURL,
+            stateDatabaseURL,
+            stateDatabaseWALURL,
+            stateDatabaseSHMURL,
+            sessionIndexURL,
+        ] + additionalFiles
+    }
+
     func accountMutationFileURLs(additionalFiles: [URL] = []) -> [URL] {
         [
             settingsURL,

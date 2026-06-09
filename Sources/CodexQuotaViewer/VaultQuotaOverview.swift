@@ -3,6 +3,7 @@ import Foundation
 struct VaultQuotaSnapshotRecord: Codable, Equatable, Sendable {
     let accountID: String
     let snapshot: CodexSnapshot?
+    let poolSnapshots: [CPAPoolQuotaSnapshot]
     let healthStatus: ProfileHealthStatus
     let errorSummary: String?
     let failureDisposition: QuotaFailureDisposition?
@@ -13,6 +14,7 @@ struct VaultQuotaSnapshotRecord: Codable, Equatable, Sendable {
     init(
         accountID: String,
         snapshot: CodexSnapshot?,
+        poolSnapshots: [CPAPoolQuotaSnapshot] = [],
         healthStatus: ProfileHealthStatus,
         errorSummary: String?,
         failureDisposition: QuotaFailureDisposition? = nil,
@@ -22,12 +24,38 @@ struct VaultQuotaSnapshotRecord: Codable, Equatable, Sendable {
     ) {
         self.accountID = accountID
         self.snapshot = snapshot
+        self.poolSnapshots = poolSnapshots
         self.healthStatus = healthStatus
         self.errorSummary = errorSummary
         self.failureDisposition = failureDisposition
         self.fetchedAt = fetchedAt
         self.authMode = authMode
         self.isCurrent = isCurrent
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case accountID
+        case snapshot
+        case poolSnapshots
+        case healthStatus
+        case errorSummary
+        case failureDisposition
+        case fetchedAt
+        case authMode
+        case isCurrent
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        accountID = try container.decode(String.self, forKey: .accountID)
+        snapshot = try container.decodeIfPresent(CodexSnapshot.self, forKey: .snapshot)
+        poolSnapshots = try container.decodeIfPresent([CPAPoolQuotaSnapshot].self, forKey: .poolSnapshots) ?? []
+        healthStatus = try container.decode(ProfileHealthStatus.self, forKey: .healthStatus)
+        errorSummary = try container.decodeIfPresent(String.self, forKey: .errorSummary)
+        failureDisposition = try container.decodeIfPresent(QuotaFailureDisposition.self, forKey: .failureDisposition)
+        fetchedAt = try container.decode(Date.self, forKey: .fetchedAt)
+        authMode = try container.decode(CodexAuthMode.self, forKey: .authMode)
+        isCurrent = try container.decode(Bool.self, forKey: .isCurrent)
     }
 }
 
@@ -90,9 +118,25 @@ struct QuotaOverviewState: Equatable {
     let apiCount: Int
     let boardTiles: [QuotaTileViewModel]
     let sections: [AllAccountsSectionModel]
+    let cpaPoolMembersByParentID: [String: [ProviderProfile]]
+
+    init(
+        chatGPTCount: Int,
+        apiCount: Int,
+        boardTiles: [QuotaTileViewModel],
+        sections: [AllAccountsSectionModel],
+        cpaPoolMembersByParentID: [String: [ProviderProfile]] = [:]
+    ) {
+        self.chatGPTCount = chatGPTCount
+        self.apiCount = apiCount
+        self.boardTiles = boardTiles
+        self.sections = sections
+        self.cpaPoolMembersByParentID = cpaPoolMembersByParentID
+    }
 
     var hasProfiles: Bool {
         sections.contains { !$0.profiles.isEmpty }
+            || cpaPoolMembersByParentID.values.contains { !$0.isEmpty }
     }
 
     var isAPIOnly: Bool {
@@ -105,6 +149,8 @@ struct QuotaOverviewRowQuotaTexts: Equatable {
     let secondaryRemainingText: String
     let primaryResetText: String
     let secondaryResetText: String
+    let primaryPaceState: QuotaPaceState?
+    let secondaryPaceState: QuotaPaceState?
 }
 
 private enum QuotaProfilePriority: Int, Comparable {
@@ -131,24 +177,26 @@ func buildQuotaOverviewState(
     currentProfile: ProviderProfile?,
     vaultProfiles: [ProviderProfile],
     refreshIntervalPreset: RefreshIntervalPreset,
+    quotaWorkPlan: QuotaWorkPlanSettings = QuotaWorkPlanSettings(),
     now: Date = Date()
 ) -> QuotaOverviewState {
-    let mergedProfiles = mergedQuotaProfiles(currentProfile: currentProfile, vaultProfiles: vaultProfiles)
-    let chatGPTProfiles = mergedProfiles.filter { $0.authMode != .apiKey }
-    let apiProfiles = mergedProfiles.filter { $0.authMode == .apiKey }
-
-    let boardCandidates = prioritizedChatGPTProfiles(
-        chatGPTProfiles,
-        refreshIntervalPreset: refreshIntervalPreset,
-        now: now
+    let effectiveCurrentProfile = currentProfileWithVaultQuotaFallback(
+        currentProfile: currentProfile,
+        vaultProfiles: vaultProfiles
     )
+    let mergedProfiles = mergedQuotaProfiles(currentProfile: effectiveCurrentProfile, vaultProfiles: vaultProfiles)
+    let regularProfiles = mergedProfiles.filter { !$0.isReadOnlyPoolMember }
+    let chatGPTProfiles = regularProfiles.filter { $0.authMode != .apiKey }
+    let apiProfiles = regularProfiles.filter { $0.authMode == .apiKey }
+
+    let boardCandidates = recentlyUsedBoardProfiles(quotaBearingProfiles(mergedProfiles))
     let boardProfiles = Array(boardCandidates.prefix(5))
 
     let boardTiles = boardProfiles.map {
         QuotaTileViewModel(
             profile: $0,
-            primaryText: quotaTilePrimaryText(for: $0),
-            secondaryText: quotaTileSecondaryText(for: $0),
+            primaryText: quotaTilePrimaryText(for: $0, now: now),
+            secondaryText: quotaTileSecondaryText(for: $0, now: now),
             state: quotaTileState(for: $0, refreshIntervalPreset: refreshIntervalPreset, now: now)
         )
     }
@@ -158,13 +206,47 @@ func buildQuotaOverviewState(
         refreshIntervalPreset: refreshIntervalPreset,
         now: now
     )
+    let cpaPoolMembersByParentID = buildCPAPoolMembersByParentID(
+        from: mergedProfiles.filter(\.isReadOnlyPoolMember),
+        refreshIntervalPreset: refreshIntervalPreset,
+        now: now
+    )
 
     return QuotaOverviewState(
         chatGPTCount: chatGPTProfiles.count,
         apiCount: apiProfiles.count,
         boardTiles: boardTiles,
-        sections: sections
+        sections: sections,
+        cpaPoolMembersByParentID: cpaPoolMembersByParentID
     )
+}
+
+func currentProfileWithVaultQuotaFallback(
+    currentProfile: ProviderProfile?,
+    vaultProfiles: [ProviderProfile]
+) -> ProviderProfile? {
+    guard let currentProfile else {
+        return nil
+    }
+
+    guard currentProfile.authMode == .apiKey,
+          quotaDisplayWindows(for: currentProfile).isEmpty else {
+        return currentProfile
+    }
+
+    guard let quotaProfile = vaultProfiles.first(where: {
+        $0.authMode == .apiKey
+            && !$0.isReadOnlyPoolMember
+            && !quotaDisplayWindows(for: $0).isEmpty
+            && (
+                $0.id == currentProfile.id
+                    || stableRuntimeIdentityMatches($0.runtimeMaterial, currentProfile.runtimeMaterial)
+            )
+    }) else {
+        return currentProfile
+    }
+
+    return profileByApplyingQuotaSnapshot(from: quotaProfile, toCurrentProfile: currentProfile)
 }
 
 func quotaTileState(
@@ -183,7 +265,7 @@ func quotaTileState(
         break
     }
 
-    if isLowQuota(profile) {
+    if isLowQuota(profile, now: now) {
         return .lowQuota
     }
 
@@ -195,7 +277,7 @@ func quotaTileState(
     return .healthy
 }
 
-func quotaTilePrimaryText(for profile: ProviderProfile) -> String {
+func quotaTilePrimaryText(for profile: ProviderProfile, now: Date = Date()) -> String {
     switch profile.healthStatus {
     case .needsLogin:
         return AppLocalization.localized(en: "Sign in required", zh: "需要登录")
@@ -204,14 +286,14 @@ func quotaTilePrimaryText(for profile: ProviderProfile) -> String {
     case .readFailure:
         return AppLocalization.localized(en: "Read failed", zh: "读取失败")
     case .healthy:
-        return quotaDisplayWindows(for: profile)
+        return quotaDisplayWindows(for: profile, now: now)
             .first
             .map(compactQuotaWindowText)
             ?? AppLocalization.quotaUnavailableLabel()
     }
 }
 
-func quotaTileSecondaryText(for profile: ProviderProfile) -> String {
+func quotaTileSecondaryText(for profile: ProviderProfile, now: Date = Date()) -> String {
     switch profile.healthStatus {
     case .needsLogin:
         return AppLocalization.localized(en: "Refresh after login", zh: "登录后再刷新")
@@ -220,10 +302,10 @@ func quotaTileSecondaryText(for profile: ProviderProfile) -> String {
     case .readFailure:
         return condensedQuotaErrorText(profile.errorMessage)
     case .healthy:
-        if isLowQuota(profile) {
-            return quotaResetScheduleText(for: profile)
+        if isLowQuota(profile, now: now) {
+            return quotaResetScheduleText(for: profile, now: now)
         }
-        return quotaDisplayWindows(for: profile)
+        return quotaDisplayWindows(for: profile, now: now)
             .dropFirst()
             .first
             .map(compactQuotaWindowText)
@@ -231,9 +313,17 @@ func quotaTileSecondaryText(for profile: ProviderProfile) -> String {
     }
 }
 
-func quotaOverviewRowQuotaTexts(for profile: ProviderProfile) -> QuotaOverviewRowQuotaTexts {
+func quotaOverviewRowQuotaTexts(for profile: ProviderProfile, now: Date = Date()) -> QuotaOverviewRowQuotaTexts {
+    quotaOverviewRowQuotaTexts(for: profile, quotaWorkPlan: QuotaWorkPlanSettings(), now: now)
+}
+
+func quotaOverviewRowQuotaTexts(
+    for profile: ProviderProfile,
+    quotaWorkPlan: QuotaWorkPlanSettings,
+    now: Date = Date()
+) -> QuotaOverviewRowQuotaTexts {
     let windowsByLabel = Dictionary(
-        uniqueKeysWithValues: quotaDisplayWindows(for: profile).map { ($0.label, $0.window) }
+        uniqueKeysWithValues: quotaDisplayWindows(for: profile, now: now).map { ($0.label, $0.window) }
     )
     let primaryLabel = "5h"
     let secondaryLabel = "1w"
@@ -242,9 +332,21 @@ func quotaOverviewRowQuotaTexts(for profile: ProviderProfile) -> QuotaOverviewRo
 
     return QuotaOverviewRowQuotaTexts(
         primaryRemainingText: quotaOverviewRowRemainingText(label: primaryLabel, window: primaryWindow),
-        secondaryRemainingText: quotaOverviewRowRemainingText(label: secondaryLabel, window: secondaryWindow),
+        secondaryRemainingText: quotaOverviewRowRemainingText(
+            label: secondaryLabel,
+            window: secondaryWindow,
+            quotaWorkPlan: quotaWorkPlan,
+            now: now
+        ),
         primaryResetText: quotaOverviewRowResetText(label: primaryLabel, window: primaryWindow),
-        secondaryResetText: quotaOverviewRowResetText(label: secondaryLabel, window: secondaryWindow)
+        secondaryResetText: quotaOverviewRowResetText(label: secondaryLabel, window: secondaryWindow),
+        primaryPaceState: nil,
+        secondaryPaceState: quotaPaceState(
+            label: secondaryLabel,
+            window: secondaryWindow,
+            quotaWorkPlan: quotaWorkPlan,
+            now: now
+        )
     )
 }
 
@@ -253,7 +355,32 @@ func allAccountsMenuText(
     refreshIntervalPreset: RefreshIntervalPreset,
     now: Date = Date()
 ) -> String {
+    if profile.isReadOnlyPoolMember {
+        let quotaSummaries = quotaDisplayWindows(for: profile, now: now).map(detailedQuotaWindowText)
+        let routeText = profile.isCPAPoolCurrentRoute
+            ? AppLocalization.localized(en: "current route", zh: "当前路由")
+            : AppLocalization.localized(en: "standby", zh: "备用")
+        let modelText = profile.model?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let reasoningText = profile.cpaPoolReasoningEffort?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let statusText = profile.cpaPoolStatusCode.map { "HTTP \($0)" } ?? "HTTP --"
+        let fetchedAtText = compactFetchedAtText(for: profile.quotaFetchedAt ?? profile.snapshot?.fetchedAt)
+        return joinedNonEmptyParts([
+            profile.displayName,
+            routeText,
+            modelText?.isEmpty == false ? modelText : "--",
+            reasoningText?.isEmpty == false ? reasoningText : "--",
+            statusText,
+            joinedNonEmptyParts(quotaSummaries.map { Optional($0) }),
+            fetchedAtText,
+        ], separator: " · ")
+    }
+
     if profile.authMode == .apiKey {
+        let quotaSummaries = quotaDisplayWindows(for: profile, now: now).map(compactQuotaWindowText)
+        if !quotaSummaries.isEmpty {
+            return "\(profile.displayName) · \(joinedNonEmptyParts(quotaSummaries.map { Optional($0) }))"
+        }
+
         return joinedNonEmptyParts([
             profile.displayName,
             profile.providerLabel == "default"
@@ -276,9 +403,9 @@ func allAccountsMenuText(
     case .stale:
         trailing = AppLocalization.localized(en: "Stale", zh: "数据过旧")
     case .lowQuota:
-        trailing = quotaResetScheduleText(for: profile)
+        trailing = quotaResetScheduleText(for: profile, now: now)
     case .healthy:
-        let summaries = quotaDisplayWindows(for: profile).map(compactQuotaWindowText)
+        let summaries = quotaDisplayWindows(for: profile, now: now).map(compactQuotaWindowText)
         trailing = summaries.isEmpty ? AppLocalization.quotaUnavailableLabel() : joinedNonEmptyParts(summaries.map { Optional($0) })
     }
 
@@ -288,6 +415,7 @@ func allAccountsMenuText(
 @MainActor
 final class VaultQuotaRefreshCoordinator {
     typealias SnapshotFetcher = (ProfileRuntimeMaterial, TimeInterval) async throws -> CodexSnapshot
+    typealias APIQuotaSnapshotFetcher = (ProfileRuntimeMaterial, String?, TimeInterval) async throws -> APIQuotaFetchResult
     typealias ProgressHandler = @MainActor (RefreshProgress) -> Void
     typealias UpdateHandler = @MainActor ([VaultQuotaSnapshotRecord]) -> Void
     typealias CompletionHandler = @MainActor ([VaultQuotaSnapshotRecord]) -> Void
@@ -317,6 +445,17 @@ final class VaultQuotaRefreshCoordinator {
                 return RetryConfiguration(initialTimeout: 6, retryTimeout: 12)
             case .manualFull:
                 return RetryConfiguration(initialTimeout: 10, retryTimeout: 15)
+            }
+        }
+
+        var apiQuotaTimeout: TimeInterval {
+            switch self {
+            case .currentOnly:
+                return 6
+            case .menuOpenSelective:
+                return 8
+            case .manualFull:
+                return 10
             }
         }
     }
@@ -351,6 +490,13 @@ final class VaultQuotaRefreshCoordinator {
         let authMode: CodexAuthMode
     }
 
+    private struct APIFetchTarget: Sendable {
+        let accountID: String
+        let runtimeMaterial: ProfileRuntimeMaterial
+        let displayName: String
+        let authMode: CodexAuthMode
+    }
+
     private final class SnapshotFetcherBox: @unchecked Sendable {
         let fetch: SnapshotFetcher
 
@@ -359,7 +505,16 @@ final class VaultQuotaRefreshCoordinator {
         }
     }
 
+    private final class APIQuotaSnapshotFetcherBox: @unchecked Sendable {
+        let fetch: APIQuotaSnapshotFetcher
+
+        init(fetch: @escaping APIQuotaSnapshotFetcher) {
+            self.fetch = fetch
+        }
+    }
+
     private let snapshotFetcherBox: SnapshotFetcherBox
+    private let apiQuotaSnapshotFetcherBox: APIQuotaSnapshotFetcherBox?
     private let maxConcurrentChatGPTRefreshes: Int
     private let nowProvider: @Sendable () -> Date
     private var activeTask: Task<Void, Never>?
@@ -373,11 +528,13 @@ final class VaultQuotaRefreshCoordinator {
     init(
         maxConcurrentChatGPTRefreshes: Int = 3,
         nowProvider: @escaping @Sendable () -> Date = Date.init,
-        snapshotFetcher: @escaping SnapshotFetcher
+        snapshotFetcher: @escaping SnapshotFetcher,
+        apiQuotaSnapshotFetcher: APIQuotaSnapshotFetcher? = nil
     ) {
         self.maxConcurrentChatGPTRefreshes = max(1, maxConcurrentChatGPTRefreshes)
         self.nowProvider = nowProvider
         snapshotFetcherBox = SnapshotFetcherBox(fetch: snapshotFetcher)
+        apiQuotaSnapshotFetcherBox = apiQuotaSnapshotFetcher.map(APIQuotaSnapshotFetcherBox.init(fetch:))
     }
 
     var isRefreshing: Bool {
@@ -480,13 +637,58 @@ final class VaultQuotaRefreshCoordinator {
         }
 
         let placeholderFetchedAt = Date()
-        var apiPlaceholderCount = 0
+        let apiQuotaSnapshotFetcherBox = apiQuotaSnapshotFetcherBox
         for record in request.vaultAccounts {
             if reusedCurrentAccountIDs.contains(record.id) {
                 continue
             }
 
-            if record.metadata.authMode == .apiKey {
+            guard record.metadata.authMode == .apiKey else {
+                continue
+            }
+
+            let shouldRefreshAPIQuota = apiQuotaSnapshotFetcherBox != nil && shouldRefreshSavedAccount(
+                record,
+                cachedRecord: recordsByID[record.id],
+                refreshPolicy: request.refreshPolicy,
+                now: now
+            )
+
+            if shouldRefreshAPIQuota {
+                let cachedRecord = recordsByID[record.id]
+                recordsByID[record.id] = VaultQuotaSnapshotRecord(
+                    accountID: record.id,
+                    snapshot: cachedRecord?.snapshot,
+                    poolSnapshots: cachedRecord?.poolSnapshots ?? [],
+                    healthStatus: .healthy,
+                    errorSummary: AppLocalization.localized(
+                        en: "Reading CPA quota…",
+                        zh: "正在读取 CPA 额度…"
+                    ),
+                    failureDisposition: nil,
+                    fetchedAt: placeholderFetchedAt,
+                    authMode: .apiKey,
+                    isCurrent: false
+                )
+                onUpdate(sortedQuotaRecords(recordsByID.values))
+
+                let target = APIFetchTarget(
+                    accountID: record.id,
+                    runtimeMaterial: record.runtimeMaterial,
+                    displayName: record.metadata.displayName,
+                    authMode: record.metadata.authMode
+                )
+                let fetchedRecord = await Self.fetchAPIQuotaSnapshotRecord(
+                    for: target,
+                    using: apiQuotaSnapshotFetcherBox,
+                    cachedRecord: cachedRecord,
+                    timeout: request.refreshPolicy.apiQuotaTimeout
+                )
+                recordsByID[record.id] = fetchedRecord
+                completedProgressCount += 1
+                publishProgressIfNeeded()
+                onUpdate(sortedQuotaRecords(recordsByID.values))
+            } else if recordsByID[record.id] == nil || request.refreshPolicy == .manualFull {
                 recordsByID[record.id] = VaultQuotaSnapshotRecord(
                     accountID: record.id,
                     snapshot: nil,
@@ -500,14 +702,11 @@ final class VaultQuotaRefreshCoordinator {
                     authMode: .apiKey,
                     isCurrent: false
                 )
-                apiPlaceholderCount += 1
+                completedProgressCount += 1
+                publishProgressIfNeeded()
             }
         }
-        if apiPlaceholderCount > 0 {
-            completedProgressCount += apiPlaceholderCount
-            publishProgressIfNeeded()
-            onUpdate(sortedQuotaRecords(recordsByID.values))
-        }
+        onUpdate(sortedQuotaRecords(recordsByID.values))
 
         let chatGPTTargets = request.vaultAccounts.compactMap { record -> FetchTarget? in
             guard !reusedCurrentAccountIDs.contains(record.id),
@@ -659,6 +858,67 @@ final class VaultQuotaRefreshCoordinator {
         }
     }
 
+    nonisolated private static func fetchAPIQuotaSnapshotRecord(
+        for target: APIFetchTarget,
+        using snapshotFetcherBox: APIQuotaSnapshotFetcherBox?,
+        cachedRecord: VaultQuotaSnapshotRecord?,
+        timeout: TimeInterval
+    ) async -> VaultQuotaSnapshotRecord {
+        guard let snapshotFetcherBox else {
+            return VaultQuotaSnapshotRecord(
+                accountID: target.accountID,
+                snapshot: nil,
+                healthStatus: .healthy,
+                errorSummary: AppLocalization.localized(
+                    en: "Official quota unavailable",
+                    zh: "官方额度不可用"
+                ),
+                failureDisposition: nil,
+                fetchedAt: Date(),
+                authMode: target.authMode,
+                isCurrent: false
+            )
+        }
+
+        do {
+            let result = try await snapshotFetcherBox.fetch(
+                target.runtimeMaterial,
+                target.displayName,
+                timeout
+            )
+            AppLog.refresh.info(
+                "Fetched API quota accountID=\(target.accountID, privacy: .public) poolCount=\(result.poolSnapshots.count, privacy: .public)"
+            )
+            return VaultQuotaSnapshotRecord(
+                accountID: target.accountID,
+                snapshot: result.snapshot,
+                poolSnapshots: result.poolSnapshots,
+                healthStatus: .healthy,
+                errorSummary: nil,
+                failureDisposition: nil,
+                fetchedAt: result.snapshot.fetchedAt,
+                authMode: target.authMode,
+                isCurrent: false
+            )
+        } catch {
+            let message = userFacingErrorMessage(error)
+            AppLog.refresh.error(
+                "API quota refresh failed accountID=\(target.accountID, privacy: .public): \(message, privacy: .public)"
+            )
+            return VaultQuotaSnapshotRecord(
+                accountID: target.accountID,
+                snapshot: cachedRecord?.snapshot,
+                poolSnapshots: cachedRecord?.poolSnapshots ?? [],
+                healthStatus: .readFailure,
+                errorSummary: message,
+                failureDisposition: .transient,
+                fetchedAt: Date(),
+                authMode: target.authMode,
+                isCurrent: false
+            )
+        }
+    }
+
     nonisolated private static func fetchSnapshot(
         for runtimeMaterial: ProfileRuntimeMaterial,
         using snapshotFetcherBox: SnapshotFetcherBox,
@@ -753,13 +1013,35 @@ private func prioritizedChatGPTProfiles(
     }
 }
 
+private func recentlyUsedBoardProfiles(_ profiles: [ProviderProfile]) -> [ProviderProfile] {
+    profiles.sorted { lhs, rhs in
+        if lhs.isCurrent != rhs.isCurrent {
+            return lhs.isCurrent && !rhs.isCurrent
+        }
+
+        return profileLastUsedComparator(
+            lhsLastUsedAt: lhs.lastUsedAt,
+            lhsDisplayName: lhs.displayName,
+            rhsLastUsedAt: rhs.lastUsedAt,
+            rhsDisplayName: rhs.displayName
+        )
+    }
+}
+
+private func quotaBearingProfiles(_ profiles: [ProviderProfile]) -> [ProviderProfile] {
+    profiles.filter {
+        !$0.isReadOnlyPoolMember && ($0.authMode != .apiKey || !quotaDisplayWindows(for: $0).isEmpty)
+    }
+}
+
 private func buildAllAccountsSections(
     from profiles: [ProviderProfile],
     refreshIntervalPreset: RefreshIntervalPreset,
     now: Date
 ) -> [AllAccountsSectionModel] {
-    let chatGPTProfiles = profiles.filter { $0.authMode != .apiKey }
-    let apiProfiles = profiles.filter { $0.authMode == .apiKey }
+    let regularProfiles = profiles.filter { !$0.isReadOnlyPoolMember }
+    let chatGPTProfiles = regularProfiles.filter { $0.authMode != .apiKey }
+    let apiProfiles = regularProfiles.filter { $0.authMode == .apiKey }
 
     let availableProfiles = prioritizedChatGPTProfiles(
         chatGPTProfiles.filter {
@@ -827,6 +1109,53 @@ private func buildAllAccountsSections(
     return sections
 }
 
+private func buildCPAPoolMembersByParentID(
+    from profiles: [ProviderProfile],
+    refreshIntervalPreset: RefreshIntervalPreset,
+    now: Date
+) -> [String: [ProviderProfile]] {
+    let groupedProfiles = Dictionary(grouping: profiles) { profile in
+        profile.cpaPoolParentID ?? "unknown"
+    }
+
+    return groupedProfiles.reduce(into: [:]) { result, element in
+        let (parentID, members) = element
+        guard !members.isEmpty else {
+            return
+        }
+        result[parentID] = sortedCPAPoolMembers(
+            members,
+            refreshIntervalPreset: refreshIntervalPreset,
+            now: now
+        )
+    }
+}
+
+private func sortedCPAPoolMembers(
+    _ profiles: [ProviderProfile],
+    refreshIntervalPreset: RefreshIntervalPreset,
+    now: Date
+) -> [ProviderProfile] {
+    profiles.sorted { lhs, rhs in
+        if lhs.isCPAPoolCurrentRoute != rhs.isCPAPoolCurrentRoute {
+            return lhs.isCPAPoolCurrentRoute && !rhs.isCPAPoolCurrentRoute
+        }
+
+        let lhsPriority = quotaProfilePriority(for: lhs, refreshIntervalPreset: refreshIntervalPreset, now: now)
+        let rhsPriority = quotaProfilePriority(for: rhs, refreshIntervalPreset: refreshIntervalPreset, now: now)
+        if lhsPriority != rhsPriority {
+            return lhsPriority < rhsPriority
+        }
+
+        return profileLastUsedComparator(
+            lhsLastUsedAt: lhs.lastUsedAt,
+            lhsDisplayName: lhs.displayName,
+            rhsLastUsedAt: rhs.lastUsedAt,
+            rhsDisplayName: rhs.displayName
+        )
+    }
+}
+
 private func quotaSectionKind(
     for profile: ProviderProfile,
     refreshIntervalPreset: RefreshIntervalPreset,
@@ -871,6 +1200,11 @@ private func shouldReuseCurrentSnapshot(
     for record: VaultAccountRecord,
     currentProfile: ProviderProfile
 ) -> Bool {
+    if currentProfile.authMode == .apiKey,
+       quotaDisplayWindows(for: currentProfile).isEmpty {
+        return false
+    }
+
     if record.id == currentProfile.id {
         return true
     }
@@ -888,12 +1222,13 @@ where S.Element == VaultQuotaSnapshotRecord {
     }
 }
 
-private func isLowQuota(_ profile: ProviderProfile) -> Bool {
-    guard profile.authMode != .apiKey else {
+private func isLowQuota(_ profile: ProviderProfile, now: Date = Date()) -> Bool {
+    if profile.authMode == .apiKey,
+       quotaDisplayWindows(for: profile, now: now).isEmpty {
         return false
     }
 
-    let windows = quotaDisplayWindows(for: profile)
+    let windows = quotaDisplayWindows(for: profile, now: now)
     guard !windows.isEmpty else {
         return false
     }
@@ -901,20 +1236,84 @@ private func isLowQuota(_ profile: ProviderProfile) -> Bool {
     return windows.contains { $0.window.remainingPercent <= 0 }
 }
 
-private func quotaDisplayWindows(for profile: ProviderProfile) -> [QuotaDisplayWindow] {
-    quotaDisplayWindows(from: profile.snapshot)
+private func quotaDisplayWindows(for profile: ProviderProfile, now: Date? = nil) -> [QuotaDisplayWindow] {
+    guard let now else {
+        return quotaDisplayWindows(from: profile.snapshot)
+    }
+    return quotaDisplayWindows(from: profile.snapshot, now: now)
 }
 
 private func compactQuotaWindowText(_ quotaWindow: QuotaDisplayWindow) -> String {
     "\(quotaWindow.label) \(quotaWindow.window.remainingPercentText)"
 }
 
-private func quotaOverviewRowRemainingText(label: String, window: RateLimitWindow?) -> String {
+private func detailedQuotaWindowText(_ quotaWindow: QuotaDisplayWindow) -> String {
+    let resetText = quotaWindow.window.resetDate
+        .map {
+            formattedQuotaResetDate(
+                $0,
+                style: quotaResetDateStyle(for: quotaWindow.window)
+            )
+        }
+        ?? "--"
+    return "\(compactQuotaWindowText(quotaWindow)) / \(resetText)"
+}
+
+private func compactFetchedAtText(for date: Date?) -> String? {
+    guard let date else {
+        return nil
+    }
+
+    let formatter = DateFormatter()
+    formatter.locale = AppLocalization.locale
+    formatter.dateFormat = "HH:mm"
+    let text = formatter.string(from: date)
+    return AppLocalization.localized(en: "updated \(text)", zh: "更新 \(text)")
+}
+
+private func quotaOverviewRowRemainingText(
+    label: String,
+    window: RateLimitWindow?,
+    quotaWorkPlan: QuotaWorkPlanSettings = QuotaWorkPlanSettings(),
+    now: Date = Date()
+) -> String {
     guard let window else {
         return "\(label) -"
     }
 
+    if let comparison = quotaPaceComparison(
+        label: label,
+        window: window,
+        quotaWorkPlan: quotaWorkPlan,
+        now: now
+    ) {
+        let expectedPercentText = "\(Int(comparison.expectedRemainingPercent.rounded()))%"
+        return "\(label) \(window.remainingPercentText)/\(expectedPercentText)"
+    }
+
     return "\(label) \(window.remainingPercentText)"
+}
+
+private func quotaPaceState(
+    label: String,
+    window: RateLimitWindow?,
+    quotaWorkPlan: QuotaWorkPlanSettings = QuotaWorkPlanSettings(),
+    now: Date
+) -> QuotaPaceState? {
+    quotaPaceComparison(label: label, window: window, quotaWorkPlan: quotaWorkPlan, now: now)?.state
+}
+
+private func quotaPaceComparison(
+    label: String,
+    window: RateLimitWindow?,
+    quotaWorkPlan: QuotaWorkPlanSettings = QuotaWorkPlanSettings(),
+    now: Date
+) -> QuotaPaceComparison? {
+    guard label == "1w",
+          let window else {
+        return nil
+    }
+    return window.paceComparison(at: now, workPlan: quotaWorkPlan)
 }
 
 private func quotaOverviewRowResetText(label: String, window: RateLimitWindow?) -> String {
@@ -935,8 +1334,8 @@ private func quotaOverviewRowResetText(label: String, window: RateLimitWindow?) 
     return "\(label) \(formatter.string(from: date))"
 }
 
-private func quotaResetScheduleText(for profile: ProviderProfile) -> String {
-    let windows = quotaDisplayWindows(for: profile)
+private func quotaResetScheduleText(for profile: ProviderProfile, now: Date = Date()) -> String {
+    let windows = quotaDisplayWindows(for: profile, now: now)
     guard !windows.isEmpty else {
         return AppLocalization.quotaUnavailableLabel()
     }
@@ -969,6 +1368,10 @@ private func quotaResetText(window: RateLimitWindow?, label: String, style: Quot
         return "\(label) --"
     }
 
+    return "\(label) \(formattedQuotaResetDate(date, style: style))"
+}
+
+private func formattedQuotaResetDate(_ date: Date, style: QuotaResetDateStyle) -> String {
     let formatter = DateFormatter()
     formatter.locale = AppLocalization.locale
     switch style {
@@ -978,13 +1381,27 @@ private func quotaResetText(window: RateLimitWindow?, label: String, style: Quot
         formatter.setLocalizedDateFormatFromTemplate("MMM d")
     }
 
-    return "\(label) \(formatter.string(from: date))"
+    return formatter.string(from: date)
 }
 
 private func preferredMergedQuotaProfile(
     _ existing: ProviderProfile,
     _ candidate: ProviderProfile
 ) -> ProviderProfile {
+    if existing.isCurrent,
+       existing.authMode == .apiKey,
+       quotaDisplayWindows(for: existing).isEmpty,
+       !quotaDisplayWindows(for: candidate).isEmpty {
+        return profileByApplyingQuotaSnapshot(from: candidate, toCurrentProfile: existing)
+    }
+
+    if candidate.isCurrent,
+       candidate.authMode == .apiKey,
+       quotaDisplayWindows(for: candidate).isEmpty,
+       !quotaDisplayWindows(for: existing).isEmpty {
+        return profileByApplyingQuotaSnapshot(from: existing, toCurrentProfile: candidate)
+    }
+
     if candidate.isCurrent && !existing.isCurrent {
         return candidate
     }
@@ -1004,6 +1421,32 @@ private func preferredMergedQuotaProfile(
     }
 
     return existing
+}
+
+private func profileByApplyingQuotaSnapshot(
+    from quotaProfile: ProviderProfile,
+    toCurrentProfile currentProfile: ProviderProfile
+) -> ProviderProfile {
+    ProviderProfile(
+        id: currentProfile.id,
+        displayName: currentProfile.displayName,
+        source: currentProfile.source,
+        runtimeMaterial: currentProfile.runtimeMaterial,
+        authMode: currentProfile.authMode,
+        providerID: currentProfile.providerID,
+        threadProviderID: currentProfile.threadProviderID,
+        providerDisplayName: currentProfile.providerDisplayName,
+        baseURLHost: currentProfile.baseURLHost,
+        model: currentProfile.model,
+        snapshot: quotaProfile.snapshot,
+        healthStatus: quotaProfile.healthStatus,
+        errorMessage: quotaProfile.errorMessage,
+        quotaFailureDisposition: quotaProfile.quotaFailureDisposition,
+        isCurrent: currentProfile.isCurrent,
+        managedFileURLs: currentProfile.managedFileURLs,
+        lastUsedAt: currentProfile.lastUsedAt,
+        quotaFetchedAt: quotaProfile.quotaFetchedAt
+    )
 }
 
 private func condensedQuotaErrorText(_ message: String?) -> String {

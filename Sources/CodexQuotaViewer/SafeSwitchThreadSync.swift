@@ -21,14 +21,184 @@ struct RolloutProviderSyncResult: Equatable {
     let updatedFiles: [URL]
 }
 
+struct LocalThreadTitleCandidate: Equatable {
+    let id: String
+    let title: String
+    let updatedAt: Date?
+}
+
+final class LocalThreadTitlePreserver {
+    private let fileManager = FileManager.default
+    private let isoFormatter = ISO8601DateFormatter()
+
+    func captureCandidates(sessionIndexURL: URL) throws -> [LocalThreadTitleCandidate] {
+        guard fileManager.fileExists(atPath: sessionIndexURL.path) else {
+            return []
+        }
+
+        let content = try String(contentsOf: sessionIndexURL, encoding: .utf8)
+        var candidatesByID: [String: LocalThreadTitleCandidate] = [:]
+
+        for line in content.split(whereSeparator: \.isNewline) {
+            guard let data = String(line).data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                continue
+            }
+
+            let id = (object["id"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let title = (
+                object["thread_name"] as? String
+                    ?? object["threadName"] as? String
+                    ?? ""
+            ).trimmingCharacters(in: .whitespacesAndNewlines)
+            let updatedAtText = object["updated_at"] as? String ?? object["updatedAt"] as? String
+
+            guard !id.isEmpty, !title.isEmpty else {
+                continue
+            }
+
+            let candidate = LocalThreadTitleCandidate(
+                id: id,
+                title: title,
+                updatedAt: updatedAtText.flatMap(parseDate)
+            )
+
+            if let existing = candidatesByID[id],
+               compare(candidate, existing) <= 0 {
+                continue
+            }
+
+            candidatesByID[id] = candidate
+        }
+
+        return candidatesByID.values.sorted {
+            if $0.id == $1.id {
+                return compare($0, $1) > 0
+            }
+            return $0.id < $1.id
+        }
+    }
+
+    func preserveUserVisibleTitles(
+        stateDatabaseURL: URL,
+        sessionIndexURL: URL
+    ) throws -> Int {
+        try preserveUserVisibleTitles(
+            stateDatabaseURL: stateDatabaseURL,
+            candidates: captureCandidates(sessionIndexURL: sessionIndexURL)
+        )
+    }
+
+    func preserveUserVisibleTitles(
+        stateDatabaseURL: URL,
+        candidates: [LocalThreadTitleCandidate]
+    ) throws -> Int {
+        guard !candidates.isEmpty,
+              fileManager.fileExists(atPath: stateDatabaseURL.path) else {
+            return 0
+        }
+
+        let sqliteURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
+        guard fileManager.isExecutableFile(atPath: sqliteURL.path) else {
+            throw LocalSQLiteQueryError.sqliteUnavailable
+        }
+
+        let sql = buildPreserveSQL(for: candidates)
+        guard !sql.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return 0
+        }
+
+        let process = Process()
+        process.executableURL = sqliteURL
+        process.arguments = [stateDatabaseURL.path]
+
+        let inputPipe = Pipe()
+        let outputPipe = Pipe()
+        let errorPipe = Pipe()
+        process.standardInput = inputPipe
+        process.standardOutput = outputPipe
+        process.standardError = errorPipe
+
+        try process.run()
+        inputPipe.fileHandleForWriting.write(Data(sql.utf8))
+        inputPipe.fileHandleForWriting.closeFile()
+        process.waitUntilExit()
+
+        let output = String(data: outputPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let errorOutput = String(data: errorPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+
+        guard process.terminationStatus == 0 else {
+            throw LocalSQLiteQueryError.queryFailed(errorOutput.isEmpty ? output : errorOutput)
+        }
+
+        return output
+            .split(whereSeparator: \.isNewline)
+            .compactMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            .reduce(0, +)
+    }
+
+    private func buildPreserveSQL(for candidates: [LocalThreadTitleCandidate]) -> String {
+        var statements = [
+            ".timeout 3000",
+            "BEGIN IMMEDIATE;",
+        ]
+
+        for candidate in candidates {
+            let id = sqlLiteral(candidate.id)
+            let title = sqlLiteral(candidate.title)
+
+            statements.append(
+                """
+                UPDATE threads
+                SET title = \(title)
+                WHERE id = \(id)
+                  AND \(title) <> ''
+                  AND COALESCE(first_user_message, '') <> ''
+                  AND \(title) <> COALESCE(first_user_message, '')
+                  AND COALESCE(title, '') = COALESCE(first_user_message, '');
+                SELECT changes();
+                """
+            )
+        }
+
+        statements.append("COMMIT;")
+        return statements.joined(separator: "\n")
+    }
+
+    private func sqlLiteral(_ value: String) -> String {
+        "'\(value.replacingOccurrences(of: "'", with: "''"))'"
+    }
+
+    private func parseDate(_ value: String) -> Date? {
+        isoFormatter.date(from: value)
+    }
+
+    private func compare(
+        _ lhs: LocalThreadTitleCandidate,
+        _ rhs: LocalThreadTitleCandidate
+    ) -> Int {
+        switch (lhs.updatedAt, rhs.updatedAt) {
+        case (.some(let lhsDate), .some(let rhsDate)):
+            return lhsDate.compare(rhsDate).rawValue
+        case (.some, .none):
+            return 1
+        case (.none, .some):
+            return -1
+        case (.none, .none):
+            return lhs.title.localizedCaseInsensitiveCompare(rhs.title).rawValue
+        }
+    }
+}
+
 final class RolloutProviderSynchronizer {
     private let fileManager = FileManager.default
+    private let copyChunkSize = 1024 * 1024
 
     func plannedUpdates(in roots: [URL], targetProvider: String) throws -> [URL] {
         var updates: [URL] = []
 
         for fileURL in try rolloutFiles(in: roots) {
-            if try updatedContentIfNeeded(for: fileURL, targetProvider: targetProvider) != nil {
+            if try updatedFirstLineIfNeeded(for: fileURL, targetProvider: targetProvider) != nil {
                 updates.append(fileURL)
             }
         }
@@ -38,17 +208,16 @@ final class RolloutProviderSynchronizer {
 
     func syncProviders(
         in roots: [URL],
-        targetProvider: String,
-        writer: FileDataWriting = DirectFileDataWriter()
+        targetProvider: String
     ) throws -> RolloutProviderSyncResult {
         var updatedFiles: [URL] = []
 
         for fileURL in try rolloutFiles(in: roots) {
-            guard let updatedContent = try updatedContentIfNeeded(for: fileURL, targetProvider: targetProvider) else {
+            guard let updatedFirstLine = try updatedFirstLineIfNeeded(for: fileURL, targetProvider: targetProvider) else {
                 continue
             }
 
-            try writer.write(updatedContent, to: fileURL)
+            try replaceFirstLine(in: fileURL, with: updatedFirstLine)
             updatedFiles.append(fileURL)
         }
 
@@ -114,7 +283,7 @@ final class RolloutProviderSynchronizer {
         return files
     }
 
-    private func updatedContentIfNeeded(
+    private func updatedFirstLineIfNeeded(
         for fileURL: URL,
         targetProvider: String
     ) throws -> Data? {
@@ -135,17 +304,81 @@ final class RolloutProviderSynchronizer {
             return nil
         }
 
-        let content = try String(contentsOf: fileURL, encoding: .utf8)
-        let lines = content.components(separatedBy: "\n")
-
         payload["model_provider"] = targetProvider
         object["payload"] = payload
 
-        let firstLineData = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
-        let firstLineString = String(data: firstLineData, encoding: .utf8) ?? firstLine
-        var nextLines = lines
-        nextLines[0] = firstLineString
-        return Data(nextLines.joined(separator: "\n").utf8)
+        return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+    }
+
+    private func replaceFirstLine(in fileURL: URL, with firstLineData: Data) throws {
+        let folderURL = fileURL.deletingLastPathComponent()
+        try fileManager.createDirectory(at: folderURL, withIntermediateDirectories: true)
+        let originalAttributes = try? fileManager.attributesOfItem(atPath: fileURL.path)
+
+        let tempURL = folderURL.appendingPathComponent(
+            ".\(fileURL.lastPathComponent).\(UUID().uuidString).tmp",
+            isDirectory: false
+        )
+
+        let input = try FileHandle(forReadingFrom: fileURL)
+        defer {
+            try? input.close()
+        }
+
+        fileManager.createFile(atPath: tempURL.path, contents: nil)
+        let output = try FileHandle(forWritingTo: tempURL)
+        defer {
+            try? output.close()
+            if fileManager.fileExists(atPath: tempURL.path) {
+                try? fileManager.removeItem(at: tempURL)
+            }
+        }
+
+        try output.write(contentsOf: firstLineData)
+        try output.write(contentsOf: Data([0x0A]))
+
+        var skippedOriginalFirstLine = false
+        while let chunk = try input.read(upToCount: copyChunkSize), !chunk.isEmpty {
+            if skippedOriginalFirstLine {
+                try output.write(contentsOf: chunk)
+                continue
+            }
+
+            guard let newlineIndex = chunk.firstIndex(of: 0x0A) else {
+                continue
+            }
+
+            skippedOriginalFirstLine = true
+            let suffixStart = chunk.index(after: newlineIndex)
+            if suffixStart < chunk.endIndex {
+                try output.write(contentsOf: chunk[suffixStart...])
+            }
+        }
+
+        if let permissions = originalAttributes?[.posixPermissions] {
+            try? fileManager.setAttributes([.posixPermissions: permissions], ofItemAtPath: tempURL.path)
+        }
+
+        _ = try fileManager.replaceItemAt(
+            fileURL,
+            withItemAt: tempURL,
+            backupItemName: nil,
+            options: []
+        )
+
+        var preservedAttributes: [FileAttributeKey: Any] = [:]
+        if let permissions = originalAttributes?[.posixPermissions] {
+            preservedAttributes[.posixPermissions] = permissions
+        }
+        if let creationDate = originalAttributes?[.creationDate] {
+            preservedAttributes[.creationDate] = creationDate
+        }
+        if let modificationDate = originalAttributes?[.modificationDate] {
+            preservedAttributes[.modificationDate] = modificationDate
+        }
+        if !preservedAttributes.isEmpty {
+            try fileManager.setAttributes(preservedAttributes, ofItemAtPath: fileURL.path)
+        }
     }
 
     private func readFirstLine(in fileURL: URL) throws -> String? {
@@ -179,6 +412,66 @@ final class RolloutProviderSynchronizer {
         }
 
         return String(data: buffer, encoding: .utf8)
+    }
+}
+
+struct LocalThreadProviderRelabeler {
+    func relabel(databaseURL: URL, targetProvider: String) throws -> Int {
+        let trimmedProvider = targetProvider.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedProvider.isEmpty,
+              FileManager.default.fileExists(atPath: databaseURL.path) else {
+            return 0
+        }
+
+        let sqliteURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
+        guard FileManager.default.isExecutableFile(atPath: sqliteURL.path) else {
+            throw LocalSQLiteQueryError.sqliteUnavailable
+        }
+
+        let escapedProvider = trimmedProvider.replacingOccurrences(of: "'", with: "''")
+        let sql = """
+        BEGIN IMMEDIATE;
+        UPDATE threads
+        SET model_provider = '\(escapedProvider)'
+        WHERE COALESCE(model_provider, '') <> '\(escapedProvider)';
+        SELECT changes();
+        COMMIT;
+        """
+
+        let process = Process()
+        process.executableURL = sqliteURL
+        process.arguments = [
+            "-batch",
+            "-noheader",
+            databaseURL.path,
+            sql,
+        ]
+
+        let stdout = Pipe()
+        let stderr = Pipe()
+        process.standardOutput = stdout
+        process.standardError = stderr
+
+        try process.run()
+        process.waitUntilExit()
+
+        guard process.terminationStatus == 0 else {
+            let errorData = stderr.fileHandleForReading.readDataToEndOfFile()
+            let errorText = String(data: errorData, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            throw LocalSQLiteQueryError.queryFailed(
+                errorText
+                    ?? AppLocalization.localized(
+                        en: "Unknown sqlite error",
+                        zh: "未知 sqlite 错误"
+                    )
+            )
+        }
+
+        let outputData = stdout.fileHandleForReading.readDataToEndOfFile()
+        let output = String(data: outputData, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return Int(output ?? "") ?? 0
     }
 }
 

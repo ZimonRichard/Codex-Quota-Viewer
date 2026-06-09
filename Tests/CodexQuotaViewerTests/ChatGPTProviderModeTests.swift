@@ -114,7 +114,66 @@ func chatGPTProviderModeManagerEntersWithBackupAndRestoresOnExit() async throws 
     #expect(desktop.reopenInvocationCount == 2)
     #expect(await invalidator.invalidateAllCount == 2)
     #expect(try Data(contentsOf: store.currentAuthURL) == originalAuth)
-    #expect(try Data(contentsOf: store.currentConfigURL) == originalConfig)
+    let restoredConfig = try Data(contentsOf: store.currentConfigURL).utf8String()
+    #expect(restoredConfig.contains("personality = \"pragmatic\""))
+    #expect(restoredConfig.contains("model_provider = \"openai\""))
+    #expect(restoredConfig.contains("[model_providers.") == false)
+}
+
+@MainActor
+@Test
+func chatGPTProviderModeExitSanitizesRestoredOfficialConfigProviderBlocks() async throws {
+    let harness = try makeHarness()
+    let store = ProfileStore(
+        baseURL: harness.appSupportURL,
+        currentAuthURL: harness.codexHomeURL.appendingPathComponent("auth.json"),
+        homeDirectoryOverride: harness.homeURL
+    )
+    try FileManager.default.createDirectory(at: harness.codexHomeURL, withIntermediateDirectories: true)
+
+    try Data(
+        """
+        {"auth_mode":"chatgpt","last_refresh":"2026-05-16T00:00:00Z","tokens":{"access_token":"token-1","account_id":"acct-1"}}
+        """.utf8
+    )
+    .write(to: store.currentAuthURL, options: .atomic)
+    try Data(
+        """
+        personality = "pragmatic"
+        model_provider = "openai"
+        model = "gpt-5.5"
+
+        [model_providers.custom]
+        name = "custom"
+        wire_api = "responses"
+        requires_openai_auth = true
+        base_url = "http://127.0.0.1:3001/v1"
+        """.utf8
+    )
+    .write(to: store.currentConfigURL, options: .atomic)
+
+    let manager = ChatGPTProviderModeManager(
+        store: store,
+        backupManager: makeBackupManager(harness),
+        desktopController: ProviderModeDesktopControllerSpy(isRunning: false),
+        quotaChannelInvalidator: ProviderModeChannelInvalidatorSpy()
+    )
+    let record = makeChatGPTProviderModeAPIRecord(
+        displayName: "Third Party",
+        apiKey: "sk-third-party",
+        baseURL: "https://proxy.example.com/v1",
+        model: "gpt-5.4"
+    )
+
+    _ = try await manager.enter(providerRecord: record)
+    _ = try await manager.exit()
+
+    let restoredConfig = try Data(contentsOf: store.currentConfigURL).utf8String()
+    #expect(restoredConfig.contains("personality = \"pragmatic\""))
+    #expect(restoredConfig.contains("model_provider = \"openai\""))
+    #expect(restoredConfig.contains("model = \"gpt-5.5\""))
+    #expect(restoredConfig.contains("[model_providers.custom]") == false)
+    #expect(restoredConfig.contains("127.0.0.1:3001") == false)
 }
 
 @MainActor
@@ -168,7 +227,7 @@ func chatGPTProviderModeExitRestoresRecordedRestorePointWhenNewerBackupExists() 
 
 @MainActor
 @Test
-func chatGPTProviderModeEnterSynchronizesRolloutsAndRepairsOfficialThreads() async throws {
+func chatGPTProviderModeEnterSyncsRolloutsAndRepairsThreadProviderMetadata() async throws {
     let harness = try makeHarness()
     let store = ProfileStore(
         baseURL: harness.appSupportURL,
@@ -207,7 +266,7 @@ func chatGPTProviderModeEnterSynchronizesRolloutsAndRepairsOfficialThreads() asy
     #expect(result.updatedRolloutCount == 1)
     #expect(repairer.invocationCount == 1)
     #expect(try readProviderModeRolloutProvider(from: rolloutURL) == "OpenAI")
-    #expect(result.restorePoint.files.contains { $0.originalPath == rolloutURL.standardizedFileURL.path })
+    #expect(result.restorePoint.files.contains { $0.originalPath == rolloutURL.standardizedFileURL.path } == false)
 }
 
 @MainActor
