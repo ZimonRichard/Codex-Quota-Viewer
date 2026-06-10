@@ -1738,6 +1738,40 @@ func quotaOverviewRowUsesWorkPlanForWeeklyTheoryText() {
 }
 
 @Test
+func quotaOverviewRowColorsFiveHourQuotaByRemainingThreshold() {
+    let now = Date(timeIntervalSince1970: 1_800_000_000)
+
+    func texts(primaryRemaining: Double) -> QuotaOverviewRowQuotaTexts {
+        quotaOverviewRowQuotaTexts(
+            for: makeTestProviderProfile(
+                id: "threshold-\(primaryRemaining)",
+                displayName: "threshold@example.com",
+                authMode: .chatgpt,
+                snapshot: makeTestSnapshot(
+                    email: "threshold@example.com",
+                    primaryRemaining: primaryRemaining,
+                    secondaryRemaining: 80,
+                    fetchedAt: now
+                )
+            ),
+            now: now
+        )
+    }
+
+    let tenPercent = texts(primaryRemaining: 10)
+    #expect(tenPercent.primaryRemainingText == "5h 10%")
+    #expect(tenPercent.primaryPaceState == nil)
+
+    let ninePercent = texts(primaryRemaining: 9)
+    #expect(ninePercent.primaryRemainingText == "5h 9%")
+    #expect(ninePercent.primaryPaceState == .withinGuard)
+
+    let zeroPercent = texts(primaryRemaining: 0)
+    #expect(zeroPercent.primaryRemainingText == "5h 0%")
+    #expect(zeroPercent.primaryPaceState == .overGuard)
+}
+
+@Test
 func quotaWorkPlanFallsBackToNormalWhenAllHoursArePaused() {
     let workPlan = QuotaWorkPlanSettings(
         isEnabled: true,

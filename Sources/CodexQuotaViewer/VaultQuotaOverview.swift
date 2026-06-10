@@ -340,7 +340,7 @@ func quotaOverviewRowQuotaTexts(
         ),
         primaryResetText: quotaOverviewRowResetText(label: primaryLabel, window: primaryWindow),
         secondaryResetText: quotaOverviewRowResetText(label: secondaryLabel, window: secondaryWindow),
-        primaryPaceState: nil,
+        primaryPaceState: shortWindowQuotaState(window: primaryWindow),
         secondaryPaceState: quotaPaceState(
             label: secondaryLabel,
             window: secondaryWindow,
@@ -1292,6 +1292,21 @@ private func quotaOverviewRowRemainingText(
     }
 
     return "\(label) \(window.remainingPercentText)"
+}
+
+private func shortWindowQuotaState(window: RateLimitWindow?) -> QuotaPaceState? {
+    guard let window else {
+        return nil
+    }
+
+    let displayedRemainingPercent = Int(window.remainingPercent.rounded())
+    if displayedRemainingPercent <= 0 {
+        return .overGuard
+    }
+    if displayedRemainingPercent < 10 {
+        return .withinGuard
+    }
+    return nil
 }
 
 private func quotaPaceState(

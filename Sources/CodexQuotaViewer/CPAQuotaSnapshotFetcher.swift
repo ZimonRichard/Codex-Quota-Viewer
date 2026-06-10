@@ -30,6 +30,9 @@ enum CPAQuotaSnapshotError: LocalizedError, Equatable {
 }
 
 struct CPAQuotaSnapshotFetcher: Sendable {
+    static let defaultRemoteCommand = "sudo -n /home/ubuntu/Qin/ops/cpa/show-cpa-pool-quota.py --json 300"
+    static let defaultTimeout: TimeInterval = 15
+
     private struct ScriptResponse: Decodable {
         let recordsSaved: Int?
         let current: CPAUsageRecord?
@@ -105,11 +108,11 @@ struct CPAQuotaSnapshotFetcher: Sendable {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         remoteCommand = command?.isEmpty == false
             ? command!
-            : "sudo -n /home/ubuntu/Qin/cpa/bin/show-cpa-pool-quota.py --json 300"
+            : Self.defaultRemoteCommand
 
         let timeoutValue = environment["CODEX_QUOTA_VIEWER_CPA_TIMEOUT_SECONDS"]
             .flatMap(Double.init)
-        timeout = max(2, timeoutValue ?? 8)
+        timeout = max(2, timeoutValue ?? Self.defaultTimeout)
     }
 
     func canFetch(runtimeMaterial: ProfileRuntimeMaterial) -> Bool {
