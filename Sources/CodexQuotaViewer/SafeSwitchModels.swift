@@ -28,6 +28,8 @@ struct ProviderProfile: Equatable, Identifiable {
     let cpaPoolParentID: String?
     let cpaPoolParentDisplayName: String?
     let isCPAPoolCurrentRoute: Bool
+    let isCPAPoolRoutePreferred: Bool
+    let isCPAPoolLatestRequestRoute: Bool
     let cpaPoolReasoningEffort: String?
     let cpaPoolStatusCode: Int?
 
@@ -53,6 +55,8 @@ struct ProviderProfile: Equatable, Identifiable {
         cpaPoolParentID: String? = nil,
         cpaPoolParentDisplayName: String? = nil,
         isCPAPoolCurrentRoute: Bool = false,
+        isCPAPoolRoutePreferred: Bool = false,
+        isCPAPoolLatestRequestRoute: Bool = false,
         cpaPoolReasoningEffort: String? = nil,
         cpaPoolStatusCode: Int? = nil
     ) {
@@ -77,6 +81,8 @@ struct ProviderProfile: Equatable, Identifiable {
         self.cpaPoolParentID = cpaPoolParentID
         self.cpaPoolParentDisplayName = cpaPoolParentDisplayName
         self.isCPAPoolCurrentRoute = isCPAPoolCurrentRoute
+        self.isCPAPoolRoutePreferred = isCPAPoolRoutePreferred
+        self.isCPAPoolLatestRequestRoute = isCPAPoolLatestRequestRoute
         self.cpaPoolReasoningEffort = cpaPoolReasoningEffort
         self.cpaPoolStatusCode = cpaPoolStatusCode
     }

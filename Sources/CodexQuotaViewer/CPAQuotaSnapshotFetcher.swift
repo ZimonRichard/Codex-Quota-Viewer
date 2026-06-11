@@ -30,6 +30,8 @@ enum CPAQuotaSnapshotError: LocalizedError, Equatable {
 }
 
 struct CPAQuotaSnapshotFetcher: Sendable {
+    typealias BridgeCommandRunner = @Sendable (_ sshHost: String, _ remoteCommand: String, _ timeout: TimeInterval) async throws -> Data
+
     static let defaultRemoteCommand = "sudo -n /home/ubuntu/Qin/ops/cpa/show-cpa-pool-quota.py --json 300"
     static let defaultTimeout: TimeInterval = 15
 
@@ -54,6 +56,8 @@ struct CPAQuotaSnapshotFetcher: Sendable {
         let authIndex: String?
         let sourceHint: String?
         let isCurrentRoute: Bool?
+        let isRoutePreferred: Bool?
+        let isLatestRequestRoute: Bool?
         let latest: CPAUsageRecord?
 
         private enum CodingKeys: String, CodingKey {
@@ -63,6 +67,8 @@ struct CPAQuotaSnapshotFetcher: Sendable {
             case authIndex = "auth_index"
             case sourceHint = "source_hint"
             case isCurrentRoute = "is_current_route"
+            case isRoutePreferred = "is_route_preferred"
+            case isLatestRequestRoute = "is_latest_request_route"
             case latest
         }
     }
@@ -98,8 +104,12 @@ struct CPAQuotaSnapshotFetcher: Sendable {
     private let sshHost: String
     private let remoteCommand: String
     private let timeout: TimeInterval
+    private let bridgeCommandRunner: BridgeCommandRunner
 
-    init(environment: [String: String] = ProcessInfo.processInfo.environment) {
+    init(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        bridgeCommandRunner: BridgeCommandRunner? = nil
+    ) {
         let host = environment["CODEX_QUOTA_VIEWER_CPA_SSH_HOST"]?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         sshHost = host?.isEmpty == false ? host! : "qin-server"
@@ -113,6 +123,7 @@ struct CPAQuotaSnapshotFetcher: Sendable {
         let timeoutValue = environment["CODEX_QUOTA_VIEWER_CPA_TIMEOUT_SECONDS"]
             .flatMap(Double.init)
         timeout = max(2, timeoutValue ?? Self.defaultTimeout)
+        self.bridgeCommandRunner = bridgeCommandRunner ?? Self.runBridgeCommand
     }
 
     func canFetch(runtimeMaterial: ProfileRuntimeMaterial) -> Bool {
@@ -155,29 +166,56 @@ struct CPAQuotaSnapshotFetcher: Sendable {
             throw CPAQuotaSnapshotError.unsupportedAccount
         }
 
-        let data = try await runBridgeCommand(timeout: overrideTimeout ?? timeout)
+        let data = try await bridgeCommandRunner(sshHost, remoteCommand, overrideTimeout ?? timeout)
         let response = try JSONDecoder().decode(ScriptResponse.self, from: data)
         let poolSnapshots = response.accounts?
             .compactMap { poolSnapshot(from: $0) } ?? []
         let currentPoolSnapshot = poolSnapshots.first(where: \.isCurrentRoute)
+        let preferredPoolSnapshot = poolSnapshots.first(where: \.isRoutePreferred)
+        let firstQuotaBearingPoolSnapshot = poolSnapshots.first {
+            !quotaDisplayWindows(from: $0.snapshot).isEmpty
+        }
 
-        if let currentPoolSnapshot {
+        if let parentPoolSnapshot = currentPoolSnapshot
+            ?? preferredPoolSnapshot
+            ?? firstQuotaBearingPoolSnapshot {
             return APIQuotaFetchResult(
                 snapshot: snapshotByApplyingDisplayName(
-                    currentPoolSnapshot.snapshot,
+                    parentPoolSnapshot.snapshot,
                     displayName: displayName
                 ),
                 poolSnapshots: poolSnapshots
             )
         }
 
+        guard poolSnapshots.isEmpty else {
+            return APIQuotaFetchResult(
+                snapshot: placeholderSnapshot(displayName: displayName),
+                poolSnapshots: poolSnapshots
+            )
+        }
+
         let fallbackRecord = response.current ?? response.latest.first
-        guard let record = fallbackRecord else {
+        if let record = fallbackRecord {
+            do {
+                let snapshot = try snapshot(from: record, displayName: displayName)
+                return APIQuotaFetchResult(snapshot: snapshot, poolSnapshots: poolSnapshots)
+            } catch CPAQuotaSnapshotError.missingRateLimitHeaders where !poolSnapshots.isEmpty {
+                return APIQuotaFetchResult(
+                    snapshot: placeholderSnapshot(displayName: displayName),
+                    poolSnapshots: poolSnapshots
+                )
+            }
+        }
+
+        guard !poolSnapshots.isEmpty else {
             throw CPAQuotaSnapshotError.noQuotaRecord
         }
 
-        let snapshot = try snapshot(from: record, displayName: displayName)
-        return APIQuotaFetchResult(snapshot: snapshot, poolSnapshots: poolSnapshots)
+        return APIQuotaFetchResult(
+            snapshot: placeholderSnapshot(displayName: displayName),
+            poolSnapshots: poolSnapshots
+        )
     }
 
     private func snapshot(from record: CPAUsageRecord, displayName: String?) throws -> CodexSnapshot {
@@ -214,14 +252,20 @@ struct CPAQuotaSnapshotFetcher: Sendable {
     }
 
     private func poolSnapshot(from account: CPAPoolAccountRecord) -> CPAPoolQuotaSnapshot? {
-        guard account.authFile != nil,
-              let latest = account.latest,
-              let snapshot = try? snapshot(
-                from: latest,
-                displayName: account.displayName
-              ) else {
+        guard account.authFile != nil else {
             return nil
         }
+
+        let latest = account.latest
+        let resolvedSnapshot = latest.flatMap { record in
+            try? snapshot(
+                from: record,
+                displayName: account.displayName
+            )
+        } ?? placeholderSnapshot(
+            displayName: account.displayName,
+            latest: latest
+        )
 
         return CPAPoolQuotaSnapshot(
             id: trimmedNonEmptyDisplayName(account.id)
@@ -230,15 +274,39 @@ struct CPAQuotaSnapshotFetcher: Sendable {
                 ?? UUID().uuidString,
             displayName: account.displayName,
             authFile: account.authFile,
-            authIndex: account.authIndex ?? latest.authIndex,
-            sourceHint: account.sourceHint ?? latest.sourceHint,
+            authIndex: account.authIndex ?? latest?.authIndex,
+            sourceHint: account.sourceHint ?? latest?.sourceHint,
             isCurrentRoute: account.isCurrentRoute ?? false,
-            snapshot: snapshot,
-            model: latest.model ?? latest.alias,
-            reasoningEffort: latest.reasoningEffort,
-            statusCode: latest.statusCode,
-            failed: latest.failed,
-            requestID: latest.requestID
+            isRoutePreferred: account.isRoutePreferred ?? false,
+            isLatestRequestRoute: account.isLatestRequestRoute ?? false,
+            snapshot: resolvedSnapshot,
+            model: latest?.model ?? latest?.alias,
+            reasoningEffort: latest?.reasoningEffort,
+            statusCode: latest?.statusCode,
+            failed: latest?.failed,
+            requestID: latest?.requestID
+        )
+    }
+
+    private func placeholderSnapshot(
+        displayName: String?,
+        latest: CPAUsageRecord? = nil
+    ) -> CodexSnapshot {
+        let planType = latest.flatMap { headerValue($0.codexHeaders, "X-Codex-Plan-Type") }
+        return CodexSnapshot(
+            account: CodexAccount(
+                type: "apiKey",
+                email: trimmedNonEmptyDisplayName(displayName),
+                planType: planType
+            ),
+            rateLimits: RateLimitSnapshot(
+                limitId: latest.flatMap { headerValue($0.codexHeaders, "X-Codex-Active-Limit") },
+                limitName: nil,
+                primary: nil,
+                secondary: nil,
+                planType: planType
+            ),
+            fetchedAt: latest.flatMap { parsedRecordTimestamp($0.timestamp) } ?? Date()
         )
     }
 
@@ -310,7 +378,11 @@ struct CPAQuotaSnapshotFetcher: Sendable {
         return nil
     }
 
-    private func runBridgeCommand(timeout: TimeInterval) async throws -> Data {
+    private static func runBridgeCommand(
+        sshHost: String,
+        remoteCommand: String,
+        timeout: TimeInterval
+    ) async throws -> Data {
         try await withThrowingTaskGroup(of: Data.self) { group in
             group.addTask {
                 try runProcess(

@@ -189,7 +189,7 @@ func buildQuotaOverviewState(
     let chatGPTProfiles = regularProfiles.filter { $0.authMode != .apiKey }
     let apiProfiles = regularProfiles.filter { $0.authMode == .apiKey }
 
-    let boardCandidates = recentlyUsedBoardProfiles(quotaBearingProfiles(mergedProfiles))
+    let boardCandidates = prioritizedBoardProfiles(from: mergedProfiles)
     let boardProfiles = Array(boardCandidates.prefix(5))
 
     let boardTiles = boardProfiles.map {
@@ -357,18 +357,18 @@ func allAccountsMenuText(
 ) -> String {
     if profile.isReadOnlyPoolMember {
         let quotaSummaries = quotaDisplayWindows(for: profile, now: now).map(detailedQuotaWindowText)
-        let routeText = profile.isCPAPoolCurrentRoute
-            ? AppLocalization.localized(en: "current route", zh: "当前路由")
-            : AppLocalization.localized(en: "standby", zh: "备用")
-        let modelText = profile.model?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let reasoningText = profile.cpaPoolReasoningEffort?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let statusText = profile.cpaPoolStatusCode.map { "HTTP \($0)" } ?? "HTTP --"
+        let routeText = cpaPoolRouteText(for: profile)
+        let modelText = cpaPoolVisibleModelText(profile.model)
+        let reasoningText = cpaPoolVisibleReasoningText(profile.cpaPoolReasoningEffort)
+        let statusText = profile.cpaPoolStatusCode.map { "HTTP \($0)" }
+        let dataStateText = cpaPoolMemberDataStateText(for: profile)
         let fetchedAtText = compactFetchedAtText(for: profile.quotaFetchedAt ?? profile.snapshot?.fetchedAt)
         return joinedNonEmptyParts([
             profile.displayName,
             routeText,
-            modelText?.isEmpty == false ? modelText : "--",
-            reasoningText?.isEmpty == false ? reasoningText : "--",
+            dataStateText,
+            modelText,
+            reasoningText,
             statusText,
             joinedNonEmptyParts(quotaSummaries.map { Optional($0) }),
             fetchedAtText,
@@ -1013,10 +1013,31 @@ private func prioritizedChatGPTProfiles(
     }
 }
 
-private func recentlyUsedBoardProfiles(_ profiles: [ProviderProfile]) -> [ProviderProfile] {
+private func prioritizedBoardProfiles(from profiles: [ProviderProfile]) -> [ProviderProfile] {
+    let cpaPoolParentIDs = Set(
+        profiles.compactMap { profile -> String? in
+            profile.isReadOnlyPoolMember ? profile.cpaPoolParentID : nil
+        }
+    )
+    return recentlyUsedBoardProfiles(
+        quotaBearingProfiles(profiles),
+        cpaPoolParentIDs: cpaPoolParentIDs
+    )
+}
+
+private func recentlyUsedBoardProfiles(
+    _ profiles: [ProviderProfile],
+    cpaPoolParentIDs: Set<String> = []
+) -> [ProviderProfile] {
     profiles.sorted { lhs, rhs in
         if lhs.isCurrent != rhs.isCurrent {
             return lhs.isCurrent && !rhs.isCurrent
+        }
+
+        let lhsIsCPAPoolParent = cpaPoolParentIDs.contains(lhs.id)
+        let rhsIsCPAPoolParent = cpaPoolParentIDs.contains(rhs.id)
+        if lhsIsCPAPoolParent != rhsIsCPAPoolParent {
+            return lhsIsCPAPoolParent && !rhsIsCPAPoolParent
         }
 
         return profileLastUsedComparator(
@@ -1029,8 +1050,19 @@ private func recentlyUsedBoardProfiles(_ profiles: [ProviderProfile]) -> [Provid
 }
 
 private func quotaBearingProfiles(_ profiles: [ProviderProfile]) -> [ProviderProfile] {
-    profiles.filter {
-        !$0.isReadOnlyPoolMember && ($0.authMode != .apiKey || !quotaDisplayWindows(for: $0).isEmpty)
+    let cpaPoolParentIDs = Set(
+        profiles.compactMap { profile -> String? in
+            profile.isReadOnlyPoolMember ? profile.cpaPoolParentID : nil
+        }
+    )
+    return profiles.filter {
+        !$0.isReadOnlyPoolMember
+            && (
+                $0.isCurrent
+                    || $0.authMode != .apiKey
+                    || !quotaDisplayWindows(for: $0).isEmpty
+                    || cpaPoolParentIDs.contains($0.id)
+            )
     }
 }
 
@@ -1137,23 +1169,51 @@ private func sortedCPAPoolMembers(
     now: Date
 ) -> [ProviderProfile] {
     profiles.sorted { lhs, rhs in
-        if lhs.isCPAPoolCurrentRoute != rhs.isCPAPoolCurrentRoute {
-            return lhs.isCPAPoolCurrentRoute && !rhs.isCPAPoolCurrentRoute
+        let lhsNumber = trailingNumber(in: lhs.displayName)
+        let rhsNumber = trailingNumber(in: rhs.displayName)
+        if lhsNumber != rhsNumber {
+            return lhsNumber < rhsNumber
         }
 
-        let lhsPriority = quotaProfilePriority(for: lhs, refreshIntervalPreset: refreshIntervalPreset, now: now)
-        let rhsPriority = quotaProfilePriority(for: rhs, refreshIntervalPreset: refreshIntervalPreset, now: now)
-        if lhsPriority != rhsPriority {
-            return lhsPriority < rhsPriority
-        }
-
-        return profileLastUsedComparator(
-            lhsLastUsedAt: lhs.lastUsedAt,
-            lhsDisplayName: lhs.displayName,
-            rhsLastUsedAt: rhs.lastUsedAt,
-            rhsDisplayName: rhs.displayName
-        )
+        return lhs.displayName.localizedStandardCompare(rhs.displayName) == .orderedAscending
     }
+}
+
+private func trailingNumber(in value: String) -> Int {
+    let digits = value.reversed().prefix { $0.isNumber }.reversed()
+    return Int(String(digits)) ?? Int.max
+}
+
+private func cpaPoolRouteText(for profile: ProviderProfile) -> String {
+    if profile.isCPAPoolCurrentRoute {
+        if profile.isCPAPoolLatestRequestRoute {
+            return AppLocalization.localized(en: "current · latest", zh: "当前 · 最近")
+        }
+        return AppLocalization.localized(en: "current", zh: "当前")
+    }
+    if profile.isCPAPoolLatestRequestRoute {
+        return AppLocalization.localized(en: "latest hit", zh: "最近")
+    }
+    if profile.isCPAPoolRoutePreferred {
+        return AppLocalization.localized(en: "scheduled route", zh: "调度选择")
+    }
+    return AppLocalization.localized(en: "standby", zh: "备用")
+}
+
+private func cpaPoolVisibleModelText(_ value: String?) -> String? {
+    let text = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let text, !text.isEmpty, text != "quota-probe" else {
+        return nil
+    }
+    return text
+}
+
+private func cpaPoolVisibleReasoningText(_ value: String?) -> String? {
+    let text = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let text, !text.isEmpty, text != "read-only" else {
+        return nil
+    }
+    return text
 }
 
 private func quotaSectionKind(
@@ -1240,7 +1300,33 @@ private func quotaDisplayWindows(for profile: ProviderProfile, now: Date? = nil)
     guard let now else {
         return quotaDisplayWindows(from: profile.snapshot)
     }
+    guard shouldProjectQuotaReset(for: profile) else {
+        return quotaDisplayWindows(from: profile.snapshot)
+    }
     return quotaDisplayWindows(from: profile.snapshot, now: now)
+}
+
+private func shouldProjectQuotaReset(for profile: ProviderProfile) -> Bool {
+    guard profile.isReadOnlyPoolMember else {
+        return true
+    }
+    return profile.healthStatus == .healthy && profile.quotaFailureDisposition == nil
+}
+
+private func cpaPoolMemberDataStateText(for profile: ProviderProfile) -> String? {
+    if profile.healthStatus == .readFailure {
+        return AppLocalization.localized(en: "stale data", zh: "旧数据")
+    }
+    if profile.healthStatus == .expired {
+        return AppLocalization.localized(en: "expired", zh: "已过期")
+    }
+    if profile.healthStatus == .needsLogin {
+        return AppLocalization.localized(en: "login required", zh: "需要登录")
+    }
+    if profile.quotaFailureDisposition != nil {
+        return AppLocalization.localized(en: "stale data", zh: "旧数据")
+    }
+    return nil
 }
 
 private func compactQuotaWindowText(_ quotaWindow: QuotaDisplayWindow) -> String {
@@ -1266,7 +1352,7 @@ private func compactFetchedAtText(for date: Date?) -> String? {
 
     let formatter = DateFormatter()
     formatter.locale = AppLocalization.locale
-    formatter.dateFormat = "HH:mm"
+    formatter.dateFormat = "M/d HH:mm"
     let text = formatter.string(from: date)
     return AppLocalization.localized(en: "updated \(text)", zh: "更新 \(text)")
 }
@@ -1393,7 +1479,7 @@ private func formattedQuotaResetDate(_ date: Date, style: QuotaResetDateStyle) -
     case .time:
         formatter.dateFormat = "HH:mm"
     case .monthDay:
-        formatter.setLocalizedDateFormatFromTemplate("MMM d")
+        formatter.dateFormat = "M/d HH:mm"
     }
 
     return formatter.string(from: date)

@@ -403,26 +403,58 @@ func quotaOverviewMenuShowsCPAPoolMembersOnAPIParentRow() throws {
         let detailsMenu = try #require(apiParentItem.submenu)
         let currentItem = try #require(detailsMenu.items.first)
         let poolHeader = try #require(detailsMenu.items.dropFirst(2).first)
-        let routedItem = try #require(detailsMenu.items.dropFirst(3).first)
-        let exhaustedItem = try #require(detailsMenu.items.dropFirst(4).first)
+        let exhaustedItem = try #require(detailsMenu.items.dropFirst(3).first)
+        let routedItem = try #require(detailsMenu.items.dropFirst(4).first)
 
         #expect(apiParentItem.isEnabled == true)
         #expect(detailsMenu.items.count == 5)
         #expect(currentItem.title == "Current API Account")
         #expect(currentItem.isEnabled == false)
+        #expect(currentItem.view is CPAPoolMenuActionRowView)
+        let currentActionRow = try #require(currentItem.view as? CPAPoolMenuActionRowView)
+        #expect(currentActionRow.model.isPrimaryAction == false)
+        #expect(color(currentActionRow.model.titleColor, isCloseTo: testCPAPoolCurrentTextColor))
         #expect(detailsMenu.items[1].isSeparatorItem == true)
         #expect(poolHeader.title == "CPA Pool Members")
         #expect(poolHeader.isEnabled == false)
+        #expect(poolHeader.view is CPAPoolMenuSectionHeaderView)
+        assertTextFieldsStayInsideBounds(try #require(currentItem.view))
+        assertTextFieldsStayInsideBounds(try #require(poolHeader.view))
         let primaryReset = makeTestTimeText(Date(timeIntervalSince1970: 1_800_000_360))
-        let secondaryReset = makeTestMonthDayText(Date(timeIntervalSince1970: 1_800_086_400))
-        let routedUpdated = makeTestTimeText(now)
-        let exhaustedUpdated = makeTestTimeText(now.addingTimeInterval(-60))
-        #expect(routedItem.title == "codex_plus_2 · current route · gpt-5.4 · xhigh · HTTP 200 · 5h 51% / \(primaryReset) · 1w 8% / \(secondaryReset) · updated \(routedUpdated)")
-        #expect(routedItem.isEnabled == false)
-        #expect(routedItem.action == nil)
-        #expect(routedItem.state == .off)
+        let secondaryReset = makeTestMonthDayTimeText(Date(timeIntervalSince1970: 1_800_086_400))
+        let routedUpdated = makeTestShortDateTimeText(now)
+        let exhaustedUpdated = makeTestShortDateTimeText(now.addingTimeInterval(-60))
         #expect(exhaustedItem.title == "codex_plus_1 · standby · gpt-5.4 · xhigh · HTTP 429 · 5h 0% / \(primaryReset) · 1w 37% / \(secondaryReset) · updated \(exhaustedUpdated)")
-        #expect(exhaustedItem.isEnabled == false)
+        #expect(exhaustedItem.isEnabled == true)
+        #expect(exhaustedItem.action == nil)
+        let exhaustedRow = try #require(exhaustedItem.view as? CPAPoolMemberMenuRowView)
+        let exhaustedPrimary = try #require(findLabel(in: exhaustedRow) { $0 == "5h 0%" })
+        #expect(findLabel(in: exhaustedRow) { $0 == "5h \(primaryReset)" } != nil)
+        #expect(findLabel(in: exhaustedRow) { $0 == "1w \(secondaryReset)" } != nil)
+        let exhaustedUpdatedLabel = try #require(findLabel(in: exhaustedRow) { $0.contains("updated \(exhaustedUpdated)") })
+        #expect(exhaustedUpdatedLabel.stringValue.hasPrefix("updated \(exhaustedUpdated)"))
+        assertLabelIsLeftAligned(in: exhaustedRow, exhaustedUpdatedLabel)
+        assertLabelsShareRow(in: exhaustedRow, exhaustedUpdatedLabel, "5h \(primaryReset)")
+        assertLabelsShareRow(in: exhaustedRow, exhaustedUpdatedLabel, "1w \(secondaryReset)")
+        assertTextFieldsStayInsideBounds(exhaustedRow)
+        #expect(color(exhaustedPrimary.textColor, isCloseTo: testCPAPoolCriticalTextColor))
+        #expect(routedItem.title == "codex_plus_2 · current · gpt-5.4 · xhigh · HTTP 200 · 5h 51% / \(primaryReset) · 1w 8% / \(secondaryReset) · updated \(routedUpdated)")
+        #expect(routedItem.isEnabled == true)
+        #expect(routedItem.action == nil)
+        #expect(routedItem.state == .on)
+        let routedRow = try #require(routedItem.view as? CPAPoolMemberMenuRowView)
+        let routeLabel = try #require(findLabel(in: routedRow) { $0 == "current" })
+        let routedSecondary = try #require(findLabel(in: routedRow) { $0 == "1w 8%" })
+        #expect(findLabel(in: routedRow) { $0 == "5h \(primaryReset)" } != nil)
+        #expect(findLabel(in: routedRow) { $0 == "1w \(secondaryReset)" } != nil)
+        let routedUpdatedLabel = try #require(findLabel(in: routedRow) { $0.contains("updated \(routedUpdated)") })
+        #expect(routedUpdatedLabel.stringValue.hasPrefix("updated \(routedUpdated)"))
+        assertLabelIsLeftAligned(in: routedRow, routedUpdatedLabel)
+        assertLabelsShareRow(in: routedRow, routedUpdatedLabel, "5h \(primaryReset)")
+        assertLabelsShareRow(in: routedRow, routedUpdatedLabel, "1w \(secondaryReset)")
+        assertTextFieldsStayInsideBounds(routedRow)
+        #expect(color(routeLabel.textColor, isCloseTo: testCPAPoolCurrentTextColor))
+        #expect(color(routedSecondary.textColor, isCloseTo: testCPAPoolWarningTextColor))
 
         let allAccountsItem = try #require(items.last)
         let allAccountsMenu = try #require(allAccountsItem.submenu)
@@ -498,6 +530,10 @@ func quotaOverviewAPIPoolHoverMenuOffersSwitchActionForNonCurrentParent() throws
         #expect(switchItem.isEnabled == true)
         #expect(switchItem.action == #selector(NSResponder.cancelOperation(_:)))
         #expect(switchItem.representedObject as? String == "api-parent")
+        let switchActionRow = try #require(switchItem.view as? CPAPoolMenuActionRowView)
+        #expect(switchActionRow.model.detail == "API account")
+        #expect(switchActionRow.model.isPrimaryAction == true)
+        #expect(color(switchActionRow.model.titleColor, isCloseTo: .systemBlue))
     }
 }
 
@@ -1537,6 +1573,70 @@ private func findLabel(in root: NSView, where predicate: (String) -> Bool) -> NS
     }
 
     return nil
+}
+
+private let testCPAPoolCurrentTextColor = NSColor(calibratedRed: 0.10, green: 0.64, blue: 0.32, alpha: 1)
+private let testCPAPoolWarningTextColor = NSColor(calibratedRed: 0.88, green: 0.50, blue: 0.00, alpha: 1)
+private let testCPAPoolCriticalTextColor = NSColor(calibratedRed: 0.90, green: 0.16, blue: 0.12, alpha: 1)
+
+private func color(_ actual: NSColor?, isCloseTo expected: NSColor) -> Bool {
+    guard let actual = actual?.usingColorSpace(.sRGB),
+          let expected = expected.usingColorSpace(.sRGB) else {
+        return false
+    }
+    return abs(actual.redComponent - expected.redComponent) < 0.01
+        && abs(actual.greenComponent - expected.greenComponent) < 0.01
+        && abs(actual.blueComponent - expected.blueComponent) < 0.01
+}
+
+@MainActor
+private func assertTextFieldsStayInsideBounds(_ root: NSView) {
+    let size = root.intrinsicContentSize
+    if size.width > 0 && size.height > 0 {
+        root.frame = NSRect(origin: .zero, size: size)
+    }
+    root.layoutSubtreeIfNeeded()
+
+    for field in textFields(in: root) {
+        let frame = root.convert(field.bounds, from: field)
+        #expect(frame.minX >= -0.5)
+        #expect(frame.minY >= -0.5)
+        #expect(frame.maxX <= root.bounds.maxX + 0.5)
+        #expect(frame.maxY <= root.bounds.maxY + 0.5)
+    }
+}
+
+@MainActor
+private func assertLabelsShareRow(in root: NSView, _ lhs: NSTextField, _ rhsText: String) {
+    let rhs = findLabel(in: root) { $0 == rhsText }
+    #expect(rhs != nil)
+    guard let rhs else {
+        return
+    }
+
+    root.layoutSubtreeIfNeeded()
+    let lhsFrame = root.convert(lhs.bounds, from: lhs)
+    let rhsFrame = root.convert(rhs.bounds, from: rhs)
+    #expect(abs(lhsFrame.midY - rhsFrame.midY) < 1)
+}
+
+@MainActor
+private func assertLabelIsLeftAligned(in root: NSView, _ label: NSTextField) {
+    root.layoutSubtreeIfNeeded()
+    let frame = root.convert(label.bounds, from: label)
+    #expect(frame.minX < 24)
+}
+
+@MainActor
+private func textFields(in root: NSView) -> [NSTextField] {
+    var fields: [NSTextField] = []
+    if let field = root as? NSTextField {
+        fields.append(field)
+    }
+    for subview in root.subviews {
+        fields.append(contentsOf: textFields(in: subview))
+    }
+    return fields
 }
 
 @MainActor

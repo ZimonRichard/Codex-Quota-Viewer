@@ -200,7 +200,9 @@ func buildAllAccountsMenuItemPresentation(
             refreshIntervalPreset: refreshIntervalPreset,
             now: now
         ),
-        showsCheckmark: !profile.isReadOnlyPoolMember && isCurrent,
+        showsCheckmark: profile.isReadOnlyPoolMember
+            ? profile.isCPAPoolCurrentRoute || profile.isCPAPoolRoutePreferred
+            : isCurrent,
         isEnabled: !profile.isReadOnlyPoolMember && (isCurrent || canSwitch),
         triggersDirectSwitch: canSwitch
     )

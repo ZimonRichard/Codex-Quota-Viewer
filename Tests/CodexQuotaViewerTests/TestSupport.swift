@@ -110,6 +110,8 @@ func makeTestProviderProfile(
     cpaPoolParentID: String? = nil,
     cpaPoolParentDisplayName: String? = nil,
     isCPAPoolCurrentRoute: Bool = false,
+    isCPAPoolRoutePreferred: Bool = false,
+    isCPAPoolLatestRequestRoute: Bool = false,
     cpaPoolReasoningEffort: String? = nil,
     cpaPoolStatusCode: Int? = nil
 ) -> ProviderProfile {
@@ -136,6 +138,8 @@ func makeTestProviderProfile(
         cpaPoolParentID: cpaPoolParentID,
         cpaPoolParentDisplayName: cpaPoolParentDisplayName,
         isCPAPoolCurrentRoute: isCPAPoolCurrentRoute,
+        isCPAPoolRoutePreferred: isCPAPoolRoutePreferred,
+        isCPAPoolLatestRequestRoute: isCPAPoolLatestRequestRoute,
         cpaPoolReasoningEffort: cpaPoolReasoningEffort,
         cpaPoolStatusCode: cpaPoolStatusCode
     )
@@ -347,5 +351,19 @@ func makeTestMonthDayText(_ date: Date) -> String {
     let formatter = DateFormatter()
     formatter.locale = AppLocalization.locale
     formatter.setLocalizedDateFormatFromTemplate("MMM d")
+    return formatter.string(from: date)
+}
+
+func makeTestShortDateTimeText(_ date: Date) -> String {
+    let formatter = DateFormatter()
+    formatter.locale = AppLocalization.locale
+    formatter.dateFormat = "M/d HH:mm"
+    return formatter.string(from: date)
+}
+
+func makeTestMonthDayTimeText(_ date: Date) -> String {
+    let formatter = DateFormatter()
+    formatter.locale = AppLocalization.locale
+    formatter.dateFormat = "M/d HH:mm"
     return formatter.string(from: date)
 }

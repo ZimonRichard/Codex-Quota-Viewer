@@ -361,15 +361,24 @@ private func makeCPAPoolDetailsMenu(
     switchItem.target = target
     switchItem.representedObject = parentProfile.id
     switchItem.isEnabled = switchItemIsEnabled
+    switchItem.view = CPAPoolMenuActionRowView(
+        model: CPAPoolMenuActionRowModel(
+            title: switchItemTitle,
+            detail: parentProfile.isCurrent
+                ? parentProfile.displayName
+                : AppLocalization.localized(en: "API account", zh: "API 账号"),
+            titleColor: parentProfile.isCurrent ? cpaPoolCurrentTextColor : .systemBlue,
+            isEnabled: switchItemIsEnabled,
+            isPrimaryAction: !parentProfile.isCurrent && switchItemIsEnabled
+        )
+    )
     submenu.addItem(switchItem)
     submenu.addItem(.separator())
 
-    let poolHeader = NSMenuItem(
-        title: AppLocalization.localized(en: "CPA Pool Members", zh: "CPA 子号池"),
-        action: nil,
-        keyEquivalent: ""
-    )
+    let poolHeaderTitle = AppLocalization.localized(en: "CPA Pool Members", zh: "CPA 子号池")
+    let poolHeader = NSMenuItem(title: poolHeaderTitle, action: nil, keyEquivalent: "")
     poolHeader.isEnabled = false
+    poolHeader.view = CPAPoolMenuSectionHeaderView(title: poolHeaderTitle)
     submenu.addItem(poolHeader)
 
     for profile in cpaPoolMembers {
@@ -379,7 +388,8 @@ private func makeCPAPoolDetailsMenu(
                 refreshIntervalPreset: refreshIntervalPreset,
                 isPerformingSafeSwitchOperation: false,
                 target: target,
-                activateSavedAccountAction: activateSavedAccountAction
+                activateSavedAccountAction: activateSavedAccountAction,
+                forceEnabledReadOnlyPoolMember: true
             )
         )
     }
@@ -392,11 +402,14 @@ private func makeAllAccountsProfileItem(
     refreshIntervalPreset: RefreshIntervalPreset,
     isPerformingSafeSwitchOperation: Bool,
     target: AnyObject?,
-    activateSavedAccountAction: Selector
+    activateSavedAccountAction: Selector,
+    forceEnabledReadOnlyPoolMember: Bool = false
 ) -> NSMenuItem {
+    let now = Date()
     let presentation = buildAllAccountsMenuItemPresentation(
         for: profile,
         refreshIntervalPreset: refreshIntervalPreset,
+        now: now,
         isPerformingSafeSwitchOperation: isPerformingSafeSwitchOperation
     )
     let item = NSMenuItem(
@@ -407,8 +420,199 @@ private func makeAllAccountsProfileItem(
     item.target = target
     item.representedObject = profile.id
     item.state = presentation.showsCheckmark ? .on : .off
-    item.isEnabled = presentation.isEnabled
+    item.isEnabled = presentation.isEnabled || (forceEnabledReadOnlyPoolMember && profile.isReadOnlyPoolMember)
+    if profile.isReadOnlyPoolMember {
+        item.attributedTitle = cpaPoolMemberAttributedTitle(
+            for: profile,
+            title: presentation.title,
+            now: now
+        )
+        if forceEnabledReadOnlyPoolMember {
+            item.view = CPAPoolMemberMenuRowView(
+                model: cpaPoolMemberMenuRowModel(for: profile, now: now)
+            )
+        }
+    }
     return item
+}
+
+private func cpaPoolMemberMenuRowModel(for profile: ProviderProfile, now: Date) -> CPAPoolMemberMenuRowModel {
+    let windows = cpaPoolMenuQuotaWindows(for: profile, now: now)
+    let primaryWindow = windows.first
+    let secondaryWindow = windows.dropFirst().first
+    let detailText = joinedNonEmptyParts([
+        cpaPoolMenuVisibleText(profile.model, hiddenValue: "quota-probe"),
+        cpaPoolMenuVisibleText(profile.cpaPoolReasoningEffort, hiddenValue: "read-only"),
+        profile.cpaPoolStatusCode.map { "HTTP \($0)" },
+    ], separator: " · ")
+
+    return CPAPoolMemberMenuRowModel(
+        name: profile.displayName,
+        routeText: cpaPoolMenuRouteText(for: profile),
+        detailText: detailText,
+        primaryText: cpaPoolMenuWindowText(primaryWindow, placeholder: "5h -"),
+        secondaryText: cpaPoolMenuWindowText(secondaryWindow, placeholder: "1w -"),
+        primaryResetText: cpaPoolMenuWindowResetText(primaryWindow, placeholder: "5h -"),
+        secondaryResetText: cpaPoolMenuWindowResetText(secondaryWindow, placeholder: "1w -"),
+        updatedText: cpaPoolMenuFetchedAtText(for: profile) ?? "",
+        routeColor: cpaPoolRouteTextColor(for: profile),
+        primaryColor: primaryWindow.map { cpaPoolQuotaTextColor(for: $0.window) } ?? .secondaryLabelColor,
+        secondaryColor: secondaryWindow.map { cpaPoolQuotaTextColor(for: $0.window) } ?? .secondaryLabelColor
+    )
+}
+
+private func cpaPoolMemberAttributedTitle(
+    for profile: ProviderProfile,
+    title: String,
+    now: Date
+) -> NSAttributedString {
+    let attributedTitle = NSMutableAttributedString(
+        string: title,
+        attributes: [.foregroundColor: NSColor.labelColor]
+    )
+
+    if profile.isCPAPoolCurrentRoute {
+        applyForegroundColor(
+            cpaPoolCurrentTextColor,
+            to: cpaPoolMenuRouteText(for: profile),
+            in: attributedTitle
+        )
+    }
+
+    for quotaWindow in cpaPoolMenuQuotaWindows(for: profile, now: now) {
+        let color = cpaPoolQuotaTextColor(for: quotaWindow.window)
+        applyForegroundColor(
+            color,
+            to: "\(quotaWindow.label) \(quotaWindow.window.remainingPercentText)",
+            in: attributedTitle
+        )
+    }
+
+    return attributedTitle
+}
+
+private func cpaPoolMenuQuotaWindows(for profile: ProviderProfile, now: Date) -> [QuotaDisplayWindow] {
+    guard profile.isReadOnlyPoolMember else {
+        return quotaDisplayWindows(from: profile.snapshot, now: now)
+    }
+    if profile.healthStatus == .healthy && profile.quotaFailureDisposition == nil {
+        return quotaDisplayWindows(from: profile.snapshot, now: now)
+    }
+    return quotaDisplayWindows(from: profile.snapshot)
+}
+
+private let cpaPoolCurrentTextColor = NSColor(calibratedRed: 0.10, green: 0.64, blue: 0.32, alpha: 1)
+private let cpaPoolWarningTextColor = NSColor(calibratedRed: 0.88, green: 0.50, blue: 0.00, alpha: 1)
+private let cpaPoolCriticalTextColor = NSColor(calibratedRed: 0.90, green: 0.16, blue: 0.12, alpha: 1)
+
+private func cpaPoolQuotaTextColor(for window: RateLimitWindow) -> NSColor {
+    let displayedRemainingPercent = Int(window.remainingPercent.rounded())
+    if displayedRemainingPercent <= 0 {
+        return cpaPoolCriticalTextColor
+    }
+    if displayedRemainingPercent < 10 {
+        return cpaPoolWarningTextColor
+    }
+    return .labelColor
+}
+
+private func cpaPoolMenuRouteText(for profile: ProviderProfile) -> String {
+    if profile.isCPAPoolCurrentRoute {
+        if profile.isCPAPoolLatestRequestRoute {
+            return AppLocalization.localized(en: "current · latest", zh: "当前 · 最近")
+        }
+        return AppLocalization.localized(en: "current", zh: "当前")
+    }
+    if profile.isCPAPoolLatestRequestRoute {
+        return AppLocalization.localized(en: "latest hit", zh: "最近")
+    }
+    if profile.isCPAPoolRoutePreferred {
+        return AppLocalization.localized(en: "scheduled route", zh: "调度选择")
+    }
+    return AppLocalization.localized(en: "standby", zh: "备用")
+}
+
+private func cpaPoolRouteTextColor(for profile: ProviderProfile) -> NSColor {
+    if profile.isCPAPoolCurrentRoute {
+        return cpaPoolCurrentTextColor
+    }
+    if profile.isCPAPoolLatestRequestRoute {
+        return .systemBlue
+    }
+    return .secondaryLabelColor
+}
+
+private func cpaPoolMenuVisibleText(_ value: String?, hiddenValue: String) -> String? {
+    let text = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let text, !text.isEmpty, text != hiddenValue else {
+        return nil
+    }
+    return text
+}
+
+private func cpaPoolMenuFetchedAtText(for profile: ProviderProfile) -> String? {
+    guard let date = profile.quotaFetchedAt ?? profile.snapshot?.fetchedAt else {
+        return nil
+    }
+
+    let formatter = DateFormatter()
+    formatter.locale = AppLocalization.locale
+    formatter.dateFormat = "M/d HH:mm"
+    let text = formatter.string(from: date)
+    return AppLocalization.localized(en: "updated \(text)", zh: "更新 \(text)")
+}
+
+private func cpaPoolMenuWindowText(_ quotaWindow: QuotaDisplayWindow?, placeholder: String) -> String {
+    guard let quotaWindow else {
+        return placeholder
+    }
+    return "\(quotaWindow.label) \(quotaWindow.window.remainingPercentText)"
+}
+
+private enum CPAPoolQuotaResetDateStyle {
+    case time
+    case monthDay
+}
+
+private func cpaPoolMenuWindowResetText(_ quotaWindow: QuotaDisplayWindow?, placeholder: String) -> String {
+    guard let quotaWindow,
+          let resetDate = quotaWindow.window.resetDate else {
+        return placeholder
+    }
+
+    let formatter = DateFormatter()
+    formatter.locale = AppLocalization.locale
+    switch cpaPoolQuotaResetDateStyle(for: quotaWindow.window) {
+    case .time:
+        formatter.dateFormat = "HH:mm"
+    case .monthDay:
+        formatter.dateFormat = "M/d HH:mm"
+    }
+
+    return "\(quotaWindow.label) \(formatter.string(from: resetDate))"
+}
+
+private func cpaPoolQuotaResetDateStyle(for window: RateLimitWindow) -> CPAPoolQuotaResetDateStyle {
+    if let duration = window.windowDurationMins,
+       duration >= 1_440 {
+        return .monthDay
+    }
+    return .time
+}
+
+private func applyForegroundColor(
+    _ color: NSColor,
+    to text: String,
+    in attributedString: NSMutableAttributedString
+) {
+    guard let range = attributedString.string.range(of: text) else {
+        return
+    }
+    attributedString.addAttribute(
+        .foregroundColor,
+        value: color,
+        range: NSRange(range, in: attributedString.string)
+    )
 }
 
 @MainActor

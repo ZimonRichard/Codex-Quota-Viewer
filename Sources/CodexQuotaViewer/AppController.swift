@@ -637,20 +637,24 @@ final class AppController: NSObject, NSMenuDelegate {
             currentProfile: currentProviderProfile,
             vaultProfiles: vaultProfiles
         )
-        let effectiveSnapshot = effectiveCurrentProfile?.snapshot ?? currentSnapshot
-        let apiKeyDetails = effectiveCurrentProfile?.authMode == .apiKey
+        let statusQuotaProfile = quotaOverviewState?.boardTiles.first?.profile ?? effectiveCurrentProfile
+        let effectiveSnapshot = statusQuotaProfile?.snapshot ?? effectiveCurrentProfile?.snapshot ?? currentSnapshot
+        let apiKeyDetails = statusQuotaProfile?.authMode == .apiKey
             ? (try? store.currentRuntimeMaterial()).flatMap {
                 apiKeyProfileDetails(authData: $0.authData, configData: $0.configData)
             }
             : nil
+        let effectiveError = statusQuotaProfile?.errorMessage ?? currentError
         let presentation = buildStatusItemPresentation(
             snapshot: effectiveSnapshot,
             apiKeyDetails: apiKeyDetails,
             statusItemStyle: settings.statusItemStyle,
             refreshIntervalPreset: settings.refreshIntervalPreset,
             isRefreshing: isRefreshing,
-            currentError: currentError,
-            lastRefreshAt: effectiveCurrentProfile?.quotaFetchedAt ?? lastRefreshAt
+            currentError: effectiveError,
+            lastRefreshAt: statusQuotaProfile?.quotaFetchedAt
+                ?? effectiveCurrentProfile?.quotaFetchedAt
+                ?? lastRefreshAt
         )
         applyStatusItemPresentation(
             presentation,
@@ -1777,9 +1781,9 @@ final class AppController: NSObject, NSMenuDelegate {
                 baseURLHost: parent.baseURLHost,
                 model: member.model ?? parent.model,
                 snapshot: member.snapshot,
-                healthStatus: .healthy,
-                errorMessage: nil,
-                quotaFailureDisposition: nil,
+                healthStatus: parent.healthStatus,
+                errorMessage: parent.errorMessage,
+                quotaFailureDisposition: parent.quotaFailureDisposition,
                 isCurrent: false,
                 managedFileURLs: [],
                 lastUsedAt: member.snapshot.fetchedAt,
@@ -1787,6 +1791,8 @@ final class AppController: NSObject, NSMenuDelegate {
                 cpaPoolParentID: parent.id,
                 cpaPoolParentDisplayName: parentDisplayName,
                 isCPAPoolCurrentRoute: member.isCurrentRoute,
+                isCPAPoolRoutePreferred: member.isRoutePreferred,
+                isCPAPoolLatestRequestRoute: member.isLatestRequestRoute,
                 cpaPoolReasoningEffort: member.reasoningEffort,
                 cpaPoolStatusCode: member.statusCode
             )

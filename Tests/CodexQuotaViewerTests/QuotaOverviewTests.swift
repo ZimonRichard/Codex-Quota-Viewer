@@ -233,6 +233,55 @@ func quotaOverviewStateKeepsCurrentAccountFirstBeforeMoreRecentProfiles() {
 }
 
 @Test
+func quotaOverviewStateKeepsCurrentPlaceholderBeforeCPAPoolParent() {
+    let now = Date(timeIntervalSince1970: 1_800_000_030)
+    let currentOfficial = makeTestProviderProfile(
+        id: "official-current",
+        displayName: "official@example.com",
+        authMode: .chatgpt,
+        snapshot: nil,
+        isCurrent: true,
+        lastUsedAt: now.addingTimeInterval(-120),
+        healthStatus: .readFailure,
+        errorMessage: "Refresh failed"
+    )
+    let apiParent = makeTestProviderProfile(
+        id: "svip",
+        displayName: "svip",
+        authMode: .apiKey,
+        snapshot: makeTestAPISnapshot(
+            primaryRemaining: 51,
+            secondaryRemaining: 55,
+            fetchedAt: now
+        ),
+        lastUsedAt: now
+    )
+    let poolMember = makeTestProviderProfile(
+        id: "svip::cpa::codex_plus_2",
+        displayName: "codex_plus_2",
+        authMode: .apiKey,
+        snapshot: makeTestAPISnapshot(
+            primaryRemaining: 51,
+            secondaryRemaining: 55,
+            fetchedAt: now
+        ),
+        source: .cpaPoolMember,
+        cpaPoolParentID: apiParent.id,
+        cpaPoolParentDisplayName: apiParent.displayName,
+        isCPAPoolCurrentRoute: true
+    )
+
+    let state = buildQuotaOverviewState(
+        currentProfile: currentOfficial,
+        vaultProfiles: [apiParent, poolMember],
+        refreshIntervalPreset: .fiveMinutes,
+        now: now
+    )
+
+    #expect(Array(state.boardTiles.map(\.profile.id).prefix(2)) == ["official-current", "svip"])
+}
+
+@Test
 func quotaOverviewStateBuildsAllAccountsSections() {
     withExclusiveAppLocalization {
         AppLocalization.setPreferredLanguage(.en, preferredLanguages: ["en-US"])
@@ -434,27 +483,90 @@ func quotaOverviewStateKeepsCPAPoolMembersNestedBelowAPIParent() {
         #expect(state.sections[1].profiles.map(\.id) == ["api-parent"])
         let poolMembers = state.cpaPoolMembersByParentID["api-parent"] ?? []
         #expect(poolMembers.map(\.id) == [
-            "api-parent::cpa::codex-plus-2",
             "api-parent::cpa::codex-plus-1",
+            "api-parent::cpa::codex-plus-2",
         ])
         let primaryReset = makeTestTimeText(Date(timeIntervalSince1970: 1_800_000_360))
-        let secondaryReset = makeTestMonthDayText(Date(timeIntervalSince1970: 1_800_086_400))
-        let routedUpdated = makeTestTimeText(now.addingTimeInterval(-20))
-        let exhaustedUpdated = makeTestTimeText(now.addingTimeInterval(-30))
+        let secondaryReset = makeTestMonthDayTimeText(Date(timeIntervalSince1970: 1_800_086_400))
+        let routedUpdated = makeTestShortDateTimeText(now.addingTimeInterval(-20))
+        let exhaustedUpdated = makeTestShortDateTimeText(now.addingTimeInterval(-30))
         #expect(
             allAccountsMenuText(
                 for: poolMembers[0],
                 refreshIntervalPreset: .fiveMinutes,
                 now: now
-            ) == "codex_plus_2 · current route · gpt-5.4 · xhigh · HTTP 200 · 5h 51% / \(primaryReset) · 1w 8% / \(secondaryReset) · updated \(routedUpdated)"
+            ) == "codex_plus_1 · standby · gpt-5.4 · xhigh · HTTP 429 · 5h 0% / \(primaryReset) · 1w 37% / \(secondaryReset) · updated \(exhaustedUpdated)"
         )
         #expect(
             allAccountsMenuText(
                 for: poolMembers[1],
                 refreshIntervalPreset: .fiveMinutes,
                 now: now
-            ) == "codex_plus_1 · standby · gpt-5.4 · xhigh · HTTP 429 · 5h 0% / \(primaryReset) · 1w 37% / \(secondaryReset) · updated \(exhaustedUpdated)"
+            ) == "codex_plus_2 · current · gpt-5.4 · xhigh · HTTP 200 · 5h 51% / \(primaryReset) · 1w 8% / \(secondaryReset) · updated \(routedUpdated)"
         )
+    }
+}
+
+@Test
+func quotaOverviewStateShowsAPIParentWhenOnlyCPAPoolPlaceholdersExist() {
+    withExclusiveAppLocalization {
+        AppLocalization.setPreferredLanguage(.en, preferredLanguages: ["en-US"])
+        let now = Date(timeIntervalSince1970: 1_800_000_200)
+        let emptySnapshot = CodexSnapshot(
+            account: CodexAccount(type: "apiKey", email: nil, planType: nil),
+            rateLimits: RateLimitSnapshot(
+                limitId: nil,
+                limitName: nil,
+                primary: nil,
+                secondary: nil,
+                planType: nil
+            ),
+            fetchedAt: now
+        )
+        let apiParent = makeTestProviderProfile(
+            id: "api-parent",
+            displayName: "svip",
+            authMode: .apiKey,
+            snapshot: emptySnapshot,
+            lastUsedAt: now
+        )
+        let firstMember = makeTestProviderProfile(
+            id: "api-parent::cpa::codex-plus-1",
+            displayName: "codex_plus_1",
+            authMode: .apiKey,
+            snapshot: emptySnapshot,
+            source: .cpaPoolMember,
+            lastUsedAt: now,
+            cpaPoolParentID: apiParent.id,
+            cpaPoolParentDisplayName: apiParent.displayName
+        )
+        let secondMember = makeTestProviderProfile(
+            id: "api-parent::cpa::codex-plus-2",
+            displayName: "codex_plus_2",
+            authMode: .apiKey,
+            snapshot: emptySnapshot,
+            source: .cpaPoolMember,
+            lastUsedAt: now,
+            cpaPoolParentID: apiParent.id,
+            cpaPoolParentDisplayName: apiParent.displayName
+        )
+
+        let state = buildQuotaOverviewState(
+            currentProfile: nil,
+            vaultProfiles: [apiParent, firstMember, secondMember],
+            refreshIntervalPreset: .fiveMinutes,
+            now: now
+        )
+
+        #expect(state.apiCount == 1)
+        #expect(state.boardTiles.map(\.profile.id) == ["api-parent"])
+        #expect(state.boardTiles.first?.primaryText == AppLocalization.quotaUnavailableLabel())
+        #expect(state.sections.map(\.title) == ["API Accounts"])
+        #expect(state.sections.first?.profiles.map(\.id) == ["api-parent"])
+        #expect(state.cpaPoolMembersByParentID["api-parent"]?.map(\.id) == [
+            "api-parent::cpa::codex-plus-1",
+            "api-parent::cpa::codex-plus-2",
+        ])
     }
 }
 
@@ -1178,6 +1290,194 @@ func vaultQuotaRefreshCoordinatorMarksAPIQuotaFailureWithoutDiscardingCachedPool
 
 @MainActor
 @Test
+func vaultQuotaRefreshCoordinatorKeepsCachedPoolWhenCPAHasNoLiveQuotaRecord() async throws {
+    let now = Date(timeIntervalSince1970: 1_800_000_390)
+    let runtime = makeTestRuntimeMaterial(id: "api-no-live-quota", authMode: .apiKey)
+    let profile = makeTestProviderProfile(
+        id: "api-account",
+        displayName: "svip",
+        authMode: .apiKey,
+        snapshot: nil,
+        runtimeMaterial: runtime
+    )
+    let record = makeTestVaultRecord(
+        from: profile,
+        source: .manualAPI,
+        createdAt: now
+    )
+    let cachedSnapshot = makeTestAPISnapshot(
+        primaryRemaining: 47,
+        secondaryRemaining: 81,
+        fetchedAt: now.addingTimeInterval(-60)
+    )
+    let cachedPoolSnapshot = CPAPoolQuotaSnapshot(
+        id: "codex_plus_1.json",
+        displayName: "codex_plus_1",
+        authFile: "codex_plus_1.json",
+        authIndex: "auth-index",
+        sourceHint: nil,
+        isCurrentRoute: true,
+        snapshot: cachedSnapshot,
+        model: "gpt-5.5",
+        reasoningEffort: "xhigh",
+        statusCode: 200,
+        failed: false,
+        requestID: "abcd1234"
+    )
+    let cachedRecord = VaultQuotaSnapshotRecord(
+        accountID: record.id,
+        snapshot: cachedSnapshot,
+        poolSnapshots: [cachedPoolSnapshot],
+        healthStatus: .healthy,
+        errorSummary: nil,
+        fetchedAt: cachedSnapshot.fetchedAt,
+        authMode: .apiKey,
+        isCurrent: false
+    )
+    let coordinator = VaultQuotaRefreshCoordinator(
+        nowProvider: { now },
+        snapshotFetcher: { _, _ in
+            Issue.record("ChatGPT snapshot fetcher should not run for API quota refreshes.")
+            return cachedSnapshot
+        },
+        apiQuotaSnapshotFetcher: { _, _, _ in
+            throw CPAQuotaSnapshotError.noQuotaRecord
+        }
+    )
+
+    let finalRecords = await withCheckedContinuation { continuation in
+        coordinator.requestRefresh(
+            .init(
+                currentProfile: nil,
+                vaultAccounts: [record],
+                cachedRecords: [cachedRecord],
+                refreshPolicy: .manualFull
+            )
+        ) { _ in
+        } onComplete: { latest in
+            continuation.resume(returning: latest)
+        }
+    }
+
+    let finalRecord = try #require(finalRecords.first)
+    #expect(finalRecord.healthStatus == .readFailure)
+    #expect(finalRecord.failureDisposition == .transient)
+    #expect(finalRecord.snapshot == cachedSnapshot)
+    #expect(finalRecord.poolSnapshots == [cachedPoolSnapshot])
+    #expect(finalRecord.errorSummary?.isEmpty == false)
+}
+
+@Test
+func staleCPAPoolMemberKeepsRawQuotaInsteadOfResettingToFull() {
+    withExclusiveAppLocalization {
+        AppLocalization.setPreferredLanguage(.en, preferredLanguages: ["en-US"])
+        let now = Date(timeIntervalSince1970: 1_800_000_390)
+        let member = makeTestProviderProfile(
+            id: "api-parent::cpa::codex-plus-1",
+            displayName: "codex_plus_1",
+            authMode: .apiKey,
+            snapshot: makeTestAPISnapshot(
+                primaryRemaining: 0,
+                secondaryRemaining: 76,
+                fetchedAt: now.addingTimeInterval(-300)
+            ),
+            source: .cpaPoolMember,
+            lastUsedAt: now.addingTimeInterval(-300),
+            healthStatus: .readFailure,
+            errorMessage: "No live CPA quota record was found.",
+            quotaFailureDisposition: .transient,
+            cpaPoolParentID: "api-parent",
+            cpaPoolParentDisplayName: "svip",
+            isCPAPoolCurrentRoute: false,
+            cpaPoolReasoningEffort: "xhigh",
+            cpaPoolStatusCode: 200
+        )
+
+        let text = allAccountsMenuText(
+            for: member,
+            refreshIntervalPreset: .fiveMinutes,
+            now: now
+        )
+
+        #expect(text.contains("stale data"))
+        #expect(text.contains("5h 0%"))
+        #expect(text.contains("5h 100%") == false)
+        #expect(text.contains("1w 76%"))
+    }
+}
+
+@Test
+func cpaPoolMemberMenuHidesProbeInternalsAndHighlightsScheduledRoute() {
+    withExclusiveAppLocalization {
+        AppLocalization.setPreferredLanguage(.en, preferredLanguages: ["en-US"])
+        let now = Date(timeIntervalSince1970: 1_800_000_200)
+        let member = makeTestProviderProfile(
+            id: "api-parent::cpa::codex-plus-2",
+            displayName: "codex_plus_2",
+            authMode: .apiKey,
+            snapshot: makeTestAPISnapshot(
+                primaryRemaining: 42,
+                secondaryRemaining: 51,
+                fetchedAt: now
+            ),
+            source: .cpaPoolMember,
+            lastUsedAt: now,
+            cpaPoolParentID: "api-parent",
+            cpaPoolParentDisplayName: "svip",
+            isCPAPoolRoutePreferred: true,
+            cpaPoolReasoningEffort: "read-only",
+            cpaPoolStatusCode: nil
+        )
+
+        let text = allAccountsMenuText(
+            for: member,
+            refreshIntervalPreset: .fiveMinutes,
+            now: now
+        )
+
+        #expect(text.contains("scheduled route"))
+        #expect(text.contains("5h 42%"))
+        #expect(text.contains("1w 51%"))
+        #expect(text.contains("quota-probe") == false)
+        #expect(text.contains("read-only") == false)
+        #expect(text.contains("HTTP --") == false)
+        #expect(text.contains(" · --") == false)
+    }
+}
+
+@Test
+func cpaPoolMemberMenuDistinguishesLatestHitFromScheduledRoute() {
+    withExclusiveAppLocalization {
+        AppLocalization.setPreferredLanguage(.en, preferredLanguages: ["en-US"])
+        let now = Date(timeIntervalSince1970: 1_800_000_470)
+        let member = makeTestProviderProfile(
+            id: "api-parent::cpa::codex_plus_1",
+            displayName: "codex_plus_1",
+            authMode: .apiKey,
+            snapshot: makeTestAPISnapshot(
+                primaryRemaining: 42,
+                secondaryRemaining: 88,
+                fetchedAt: now
+            ),
+            source: .cpaPoolMember,
+            cpaPoolParentID: "api-parent",
+            cpaPoolParentDisplayName: "svip",
+            isCPAPoolLatestRequestRoute: true
+        )
+
+        let text = allAccountsMenuText(
+            for: member,
+            refreshIntervalPreset: .fiveMinutes,
+            now: now
+        )
+
+        #expect(text.contains("latest hit"))
+        #expect(text.contains("current") == false)
+    }
+}
+
+@MainActor
+@Test
 func vaultQuotaRefreshCoordinatorReportsProgressAcrossReusedPlaceholderAndFetchedAccounts() async {
     let now = Date(timeIntervalSince1970: 1_800_000_380)
     let currentRuntime = makeTestRuntimeMaterial(id: "progress-current", authMode: .chatgpt)
@@ -1396,12 +1696,8 @@ func exhaustedAccountMenuTextShowsResetScheduleInsteadOfPercentages() {
         timeFormatter.locale = AppLocalization.locale
         timeFormatter.dateFormat = "HH:mm"
 
-        let dateFormatter = DateFormatter()
-        dateFormatter.locale = AppLocalization.locale
-        dateFormatter.setLocalizedDateFormatFromTemplate("MMM d")
-
         #expect(text.contains("5h \(timeFormatter.string(from: Date(timeIntervalSince1970: 1_800_000_360)))"))
-        #expect(text.contains("1w \(dateFormatter.string(from: Date(timeIntervalSince1970: 1_800_086_400)))"))
+        #expect(text.contains("1w \(makeTestMonthDayTimeText(Date(timeIntervalSince1970: 1_800_086_400)))"))
         #expect(text.contains("5h 0%") == false)
     }
 }

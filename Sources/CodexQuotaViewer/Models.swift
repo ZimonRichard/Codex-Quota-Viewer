@@ -508,12 +508,31 @@ struct CPAPoolQuotaSnapshot: Codable, Equatable, Sendable {
     let authIndex: String?
     let sourceHint: String?
     let isCurrentRoute: Bool
+    let isRoutePreferred: Bool
+    let isLatestRequestRoute: Bool
     let snapshot: CodexSnapshot
     let model: String?
     let reasoningEffort: String?
     let statusCode: Int?
     let failed: Bool?
     let requestID: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case displayName
+        case authFile
+        case authIndex
+        case sourceHint
+        case isCurrentRoute
+        case isRoutePreferred
+        case isLatestRequestRoute
+        case snapshot
+        case model
+        case reasoningEffort
+        case statusCode
+        case failed
+        case requestID
+    }
 
     init(
         id: String,
@@ -522,6 +541,8 @@ struct CPAPoolQuotaSnapshot: Codable, Equatable, Sendable {
         authIndex: String?,
         sourceHint: String?,
         isCurrentRoute: Bool,
+        isRoutePreferred: Bool = false,
+        isLatestRequestRoute: Bool = false,
         snapshot: CodexSnapshot,
         model: String?,
         reasoningEffort: String?,
@@ -535,12 +556,32 @@ struct CPAPoolQuotaSnapshot: Codable, Equatable, Sendable {
         self.authIndex = authIndex
         self.sourceHint = sourceHint
         self.isCurrentRoute = isCurrentRoute
+        self.isRoutePreferred = isRoutePreferred
+        self.isLatestRequestRoute = isLatestRequestRoute
         self.snapshot = snapshot
         self.model = model
         self.reasoningEffort = reasoningEffort
         self.statusCode = statusCode
         self.failed = failed
         self.requestID = requestID
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        displayName = try container.decode(String.self, forKey: .displayName)
+        authFile = try container.decodeIfPresent(String.self, forKey: .authFile)
+        authIndex = try container.decodeIfPresent(String.self, forKey: .authIndex)
+        sourceHint = try container.decodeIfPresent(String.self, forKey: .sourceHint)
+        isCurrentRoute = try container.decode(Bool.self, forKey: .isCurrentRoute)
+        isRoutePreferred = try container.decodeIfPresent(Bool.self, forKey: .isRoutePreferred) ?? false
+        isLatestRequestRoute = try container.decodeIfPresent(Bool.self, forKey: .isLatestRequestRoute) ?? false
+        snapshot = try container.decode(CodexSnapshot.self, forKey: .snapshot)
+        model = try container.decodeIfPresent(String.self, forKey: .model)
+        reasoningEffort = try container.decodeIfPresent(String.self, forKey: .reasoningEffort)
+        statusCode = try container.decodeIfPresent(Int.self, forKey: .statusCode)
+        failed = try container.decodeIfPresent(Bool.self, forKey: .failed)
+        requestID = try container.decodeIfPresent(String.self, forKey: .requestID)
     }
 }
 
@@ -788,6 +829,17 @@ func classifyProfileHealth(from error: Error) -> ProfileHealthStatus {
 func classifyQuotaFailureDisposition(from error: Error) -> QuotaFailureDisposition? {
     guard classifyProfileHealth(from: error) == .readFailure else {
         return nil
+    }
+
+    if let cpaError = error as? CPAQuotaSnapshotError {
+        switch cpaError {
+        case .commandFailed, .noQuotaRecord:
+            return .transient
+        case .missingRateLimitHeaders:
+            return .terminal
+        case .unsupportedAccount:
+            return nil
+        }
     }
 
     if let rpcError = error as? CodexRPCError {
