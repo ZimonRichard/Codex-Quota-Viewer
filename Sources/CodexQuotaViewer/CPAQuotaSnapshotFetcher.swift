@@ -33,7 +33,7 @@ struct CPAQuotaSnapshotFetcher: Sendable {
     typealias BridgeCommandRunner = @Sendable (_ sshHost: String, _ remoteCommand: String, _ timeout: TimeInterval) async throws -> Data
 
     static let defaultRemoteCommand = "sudo -n /home/ubuntu/Qin/ops/cpa/show-cpa-pool-quota.py --json 300"
-    static let defaultTimeout: TimeInterval = 15
+    static let defaultTimeout: TimeInterval = 75
 
     private struct ScriptResponse: Decodable {
         let recordsSaved: Int?
@@ -59,6 +59,10 @@ struct CPAQuotaSnapshotFetcher: Sendable {
         let isRoutePreferred: Bool?
         let isLatestRequestRoute: Bool?
         let latest: CPAUsageRecord?
+        let quotaGuard: CPAQuotaGuardRecord?
+        let refreshSkipped: Bool?
+        let skipReason: String?
+        let accountStats: CPAAccountStatsRecord?
 
         private enum CodingKeys: String, CodingKey {
             case id
@@ -70,6 +74,10 @@ struct CPAQuotaSnapshotFetcher: Sendable {
             case isRoutePreferred = "is_route_preferred"
             case isLatestRequestRoute = "is_latest_request_route"
             case latest
+            case quotaGuard = "quota_guard"
+            case refreshSkipped = "refresh_skipped"
+            case skipReason = "skip_reason"
+            case accountStats = "account_stats"
         }
     }
 
@@ -84,6 +92,10 @@ struct CPAQuotaSnapshotFetcher: Sendable {
         let requestID: String?
         let failed: Bool?
         let statusCode: Int?
+        let stale: Bool?
+        let refreshSkipped: Bool?
+        let skipReason: String?
+        let quotaGuard: CPAQuotaGuardRecord?
         let codexHeaders: [String: [String]]
 
         private enum CodingKeys: String, CodingKey {
@@ -97,7 +109,36 @@ struct CPAQuotaSnapshotFetcher: Sendable {
             case requestID = "request_id"
             case failed
             case statusCode = "status_code"
+            case stale
+            case refreshSkipped = "refresh_skipped"
+            case skipReason = "skip_reason"
+            case quotaGuard = "quota_guard"
             case codexHeaders = "codex_headers"
+        }
+    }
+
+    private struct CPAQuotaGuardRecord: Decodable {
+        let state: String?
+        let reason: String?
+    }
+
+    private struct CPAAccountStatsRecord: Decodable {
+        let sampleCount: Int?
+        let primary: CPAAccountStatsCapacity?
+        let secondary: CPAAccountStatsCapacity?
+
+        private enum CodingKeys: String, CodingKey {
+            case sampleCount = "sample_count"
+            case primary
+            case secondary
+        }
+    }
+
+    private struct CPAAccountStatsCapacity: Decodable {
+        let estimatedRemainingSuccesses: Int?
+
+        private enum CodingKeys: String, CodingKey {
+            case estimatedRemainingSuccesses = "estimated_remaining_successes"
         }
     }
 
@@ -284,8 +325,23 @@ struct CPAQuotaSnapshotFetcher: Sendable {
             reasoningEffort: latest?.reasoningEffort,
             statusCode: latest?.statusCode,
             failed: latest?.failed,
-            requestID: latest?.requestID
+            requestID: latest?.requestID,
+            isStale: latest?.stale ?? false,
+            refreshSkipped: account.refreshSkipped ?? latest?.refreshSkipped ?? false,
+            skipReason: account.skipReason ?? latest?.skipReason,
+            quotaGuardState: account.quotaGuard?.state ?? latest?.quotaGuard?.state,
+            quotaGuardReason: account.quotaGuard?.reason ?? latest?.quotaGuard?.reason,
+            statsSampleCount: account.accountStats?.sampleCount,
+            estimatedRemainingSuccesses: estimatedRemainingSuccesses(from: account.accountStats)
         )
+    }
+
+    private func estimatedRemainingSuccesses(from stats: CPAAccountStatsRecord?) -> Int? {
+        let values = [
+            stats?.primary?.estimatedRemainingSuccesses,
+            stats?.secondary?.estimatedRemainingSuccesses
+        ].compactMap { $0 }
+        return values.min()
     }
 
     private func placeholderSnapshot(

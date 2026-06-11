@@ -441,6 +441,9 @@ private func cpaPoolMemberMenuRowModel(for profile: ProviderProfile, now: Date) 
     let primaryWindow = windows.first
     let secondaryWindow = windows.dropFirst().first
     let detailText = joinedNonEmptyParts([
+        cpaPoolGuardText(for: profile),
+        cpaPoolDataStateText(for: profile),
+        cpaPoolStatsText(for: profile),
         cpaPoolMenuVisibleText(profile.model, hiddenValue: "quota-probe"),
         cpaPoolMenuVisibleText(profile.cpaPoolReasoningEffort, hiddenValue: "read-only"),
         profile.cpaPoolStatusCode.map { "HTTP \($0)" },
@@ -536,10 +539,77 @@ private func cpaPoolRouteTextColor(for profile: ProviderProfile) -> NSColor {
     if profile.isCPAPoolCurrentRoute {
         return cpaPoolCurrentTextColor
     }
+    if profile.cpaPoolGuardState == "quota_quarantine" {
+        return cpaPoolCriticalTextColor
+    }
+    if profile.cpaPoolGuardState == "canary" || profile.cpaPoolRefreshSkipped || profile.cpaPoolIsStale {
+        return cpaPoolWarningTextColor
+    }
     if profile.isCPAPoolLatestRequestRoute {
         return .systemBlue
     }
     return .secondaryLabelColor
+}
+
+private func cpaPoolGuardText(for profile: ProviderProfile) -> String? {
+    let state = profile.cpaPoolGuardState?.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let state, !state.isEmpty, state != "active" else {
+        return nil
+    }
+    let label: String
+    switch state {
+    case "quota_quarantine":
+        label = AppLocalization.localized(en: "quota guard", zh: "额度保护")
+    case "canary":
+        label = AppLocalization.localized(en: "recovery check", zh: "恢复确认")
+    default:
+        label = state
+    }
+    let reason = cpaPoolGuardReasonText(profile.cpaPoolGuardReason)
+    return joinedNonEmptyParts([label, reason], separator: " ")
+}
+
+private func cpaPoolGuardReasonText(_ reason: String?) -> String? {
+    let text = reason?.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let text, !text.isEmpty else {
+        return nil
+    }
+    switch text {
+    case "usage_limit_reached":
+        return AppLocalization.localized(en: "limit reached", zh: "额度已用尽")
+    case "rate_limited":
+        return AppLocalization.localized(en: "rate limited", zh: "限速")
+    case "primary_quota_near_limit":
+        return AppLocalization.localized(en: "5h near limit", zh: "5h 接近上限")
+    case "weekly_quota_near_limit":
+        return AppLocalization.localized(en: "1w near limit", zh: "1w 接近上限")
+    default:
+        return text
+    }
+}
+
+private func cpaPoolDataStateText(for profile: ProviderProfile) -> String? {
+    if profile.cpaPoolRefreshSkipped {
+        if profile.cpaPoolSkipReason == "guard_backoff" {
+            return AppLocalization.localized(en: "guard backoff", zh: "保护退避")
+        }
+        return AppLocalization.localized(en: "refresh backoff", zh: "刷新退避")
+    }
+    if profile.cpaPoolIsStale {
+        return AppLocalization.localized(en: "stale quota", zh: "旧额度")
+    }
+    return nil
+}
+
+private func cpaPoolStatsText(for profile: ProviderProfile) -> String? {
+    guard let sampleCount = profile.cpaPoolStatsSampleCount,
+          sampleCount > 0 else {
+        return nil
+    }
+    if let remaining = profile.cpaPoolEstimatedRemainingSuccesses {
+        return AppLocalization.localized(en: "samples \(sampleCount) · est \(remaining)", zh: "样本 \(sampleCount) · 估算 \(remaining)")
+    }
+    return AppLocalization.localized(en: "samples \(sampleCount)", zh: "样本 \(sampleCount)")
 }
 
 private func cpaPoolMenuVisibleText(_ value: String?, hiddenValue: String) -> String? {

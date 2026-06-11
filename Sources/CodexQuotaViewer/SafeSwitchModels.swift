@@ -32,6 +32,13 @@ struct ProviderProfile: Equatable, Identifiable {
     let isCPAPoolLatestRequestRoute: Bool
     let cpaPoolReasoningEffort: String?
     let cpaPoolStatusCode: Int?
+    let cpaPoolIsStale: Bool
+    let cpaPoolRefreshSkipped: Bool
+    let cpaPoolSkipReason: String?
+    let cpaPoolGuardState: String?
+    let cpaPoolGuardReason: String?
+    let cpaPoolStatsSampleCount: Int?
+    let cpaPoolEstimatedRemainingSuccesses: Int?
 
     init(
         id: String,
@@ -58,7 +65,14 @@ struct ProviderProfile: Equatable, Identifiable {
         isCPAPoolRoutePreferred: Bool = false,
         isCPAPoolLatestRequestRoute: Bool = false,
         cpaPoolReasoningEffort: String? = nil,
-        cpaPoolStatusCode: Int? = nil
+        cpaPoolStatusCode: Int? = nil,
+        cpaPoolIsStale: Bool = false,
+        cpaPoolRefreshSkipped: Bool = false,
+        cpaPoolSkipReason: String? = nil,
+        cpaPoolGuardState: String? = nil,
+        cpaPoolGuardReason: String? = nil,
+        cpaPoolStatsSampleCount: Int? = nil,
+        cpaPoolEstimatedRemainingSuccesses: Int? = nil
     ) {
         self.id = id
         self.displayName = displayName
@@ -85,6 +99,13 @@ struct ProviderProfile: Equatable, Identifiable {
         self.isCPAPoolLatestRequestRoute = isCPAPoolLatestRequestRoute
         self.cpaPoolReasoningEffort = cpaPoolReasoningEffort
         self.cpaPoolStatusCode = cpaPoolStatusCode
+        self.cpaPoolIsStale = cpaPoolIsStale
+        self.cpaPoolRefreshSkipped = cpaPoolRefreshSkipped
+        self.cpaPoolSkipReason = cpaPoolSkipReason
+        self.cpaPoolGuardState = cpaPoolGuardState
+        self.cpaPoolGuardReason = cpaPoolGuardReason
+        self.cpaPoolStatsSampleCount = cpaPoolStatsSampleCount
+        self.cpaPoolEstimatedRemainingSuccesses = cpaPoolEstimatedRemainingSuccesses
     }
 
     var modeLabel: String {

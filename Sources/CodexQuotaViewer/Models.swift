@@ -516,6 +516,13 @@ struct CPAPoolQuotaSnapshot: Codable, Equatable, Sendable {
     let statusCode: Int?
     let failed: Bool?
     let requestID: String?
+    let isStale: Bool
+    let refreshSkipped: Bool
+    let skipReason: String?
+    let quotaGuardState: String?
+    let quotaGuardReason: String?
+    let statsSampleCount: Int?
+    let estimatedRemainingSuccesses: Int?
 
     private enum CodingKeys: String, CodingKey {
         case id
@@ -532,6 +539,13 @@ struct CPAPoolQuotaSnapshot: Codable, Equatable, Sendable {
         case statusCode
         case failed
         case requestID
+        case isStale
+        case refreshSkipped
+        case skipReason
+        case quotaGuardState
+        case quotaGuardReason
+        case statsSampleCount
+        case estimatedRemainingSuccesses
     }
 
     init(
@@ -548,7 +562,14 @@ struct CPAPoolQuotaSnapshot: Codable, Equatable, Sendable {
         reasoningEffort: String?,
         statusCode: Int?,
         failed: Bool?,
-        requestID: String?
+        requestID: String?,
+        isStale: Bool = false,
+        refreshSkipped: Bool = false,
+        skipReason: String? = nil,
+        quotaGuardState: String? = nil,
+        quotaGuardReason: String? = nil,
+        statsSampleCount: Int? = nil,
+        estimatedRemainingSuccesses: Int? = nil
     ) {
         self.id = id
         self.displayName = displayName
@@ -564,6 +585,13 @@ struct CPAPoolQuotaSnapshot: Codable, Equatable, Sendable {
         self.statusCode = statusCode
         self.failed = failed
         self.requestID = requestID
+        self.isStale = isStale
+        self.refreshSkipped = refreshSkipped
+        self.skipReason = skipReason
+        self.quotaGuardState = quotaGuardState
+        self.quotaGuardReason = quotaGuardReason
+        self.statsSampleCount = statsSampleCount
+        self.estimatedRemainingSuccesses = estimatedRemainingSuccesses
     }
 
     init(from decoder: Decoder) throws {
@@ -582,6 +610,13 @@ struct CPAPoolQuotaSnapshot: Codable, Equatable, Sendable {
         statusCode = try container.decodeIfPresent(Int.self, forKey: .statusCode)
         failed = try container.decodeIfPresent(Bool.self, forKey: .failed)
         requestID = try container.decodeIfPresent(String.self, forKey: .requestID)
+        isStale = try container.decodeIfPresent(Bool.self, forKey: .isStale) ?? false
+        refreshSkipped = try container.decodeIfPresent(Bool.self, forKey: .refreshSkipped) ?? false
+        skipReason = try container.decodeIfPresent(String.self, forKey: .skipReason)
+        quotaGuardState = try container.decodeIfPresent(String.self, forKey: .quotaGuardState)
+        quotaGuardReason = try container.decodeIfPresent(String.self, forKey: .quotaGuardReason)
+        statsSampleCount = try container.decodeIfPresent(Int.self, forKey: .statsSampleCount)
+        estimatedRemainingSuccesses = try container.decodeIfPresent(Int.self, forKey: .estimatedRemainingSuccesses)
     }
 }
 

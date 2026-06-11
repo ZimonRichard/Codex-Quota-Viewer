@@ -27,7 +27,7 @@ func cpaQuotaSnapshotFetcherDefaultCommandUsesCurrentQinOpsPath() {
 
 @Test
 func cpaQuotaSnapshotFetcherDefaultTimeoutCoversServerBridgeTimeout() {
-    #expect(CPAQuotaSnapshotFetcher.defaultTimeout == 15)
+    #expect(CPAQuotaSnapshotFetcher.defaultTimeout == 75)
 }
 
 @Test

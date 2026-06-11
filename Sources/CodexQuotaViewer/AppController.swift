@@ -1794,7 +1794,14 @@ final class AppController: NSObject, NSMenuDelegate {
                 isCPAPoolRoutePreferred: member.isRoutePreferred,
                 isCPAPoolLatestRequestRoute: member.isLatestRequestRoute,
                 cpaPoolReasoningEffort: member.reasoningEffort,
-                cpaPoolStatusCode: member.statusCode
+                cpaPoolStatusCode: member.statusCode,
+                cpaPoolIsStale: member.isStale,
+                cpaPoolRefreshSkipped: member.refreshSkipped,
+                cpaPoolSkipReason: member.skipReason,
+                cpaPoolGuardState: member.quotaGuardState,
+                cpaPoolGuardReason: member.quotaGuardReason,
+                cpaPoolStatsSampleCount: member.statsSampleCount,
+                cpaPoolEstimatedRemainingSuccesses: member.estimatedRemainingSuccesses
             )
         }
     }
