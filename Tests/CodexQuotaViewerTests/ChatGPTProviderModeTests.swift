@@ -91,6 +91,11 @@ func chatGPTProviderModeManagerEntersWithBackupAndRestoresOnExit() async throws 
     #expect(modeState.providerAccountID == record.id)
     #expect(modeState.restorePointID == enterResult.restorePoint.id)
     #expect(enterResult.restorePoint.reason == "chatgpt-provider-mode")
+    let protectedPaths = Set(enterResult.restorePoint.files.map(\.originalPath))
+    #expect(protectedPaths.contains(store.settingsURL.path))
+    for url in record.protectedFileURLs {
+        #expect(protectedPaths.contains(url.path))
+    }
     #expect(try manager.isActive())
     #expect(desktop.closeInvocationCount == 1)
     #expect(desktop.reopenInvocationCount == 1)

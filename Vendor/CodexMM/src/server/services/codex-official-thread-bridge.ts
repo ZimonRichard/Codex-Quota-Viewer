@@ -146,18 +146,27 @@ export class CodexOfficialThreadBridge {
     existing: CodexThreadRecord | null,
   ): Promise<CodexThreadUpsert> {
     const meta = await readSessionMetaSnapshot(desired.rolloutPath);
-    const createdAt = toUnixSeconds(record.startedAt);
-    const updatedAt = toUnixSeconds(record.updatedAt);
+    const createdAt = existing?.createdAt ?? toUnixSeconds(record.startedAt);
+    const updatedAt = toUnixSeconds(desired.updatedAt);
 
     return {
       id: record.id,
       rolloutPath: desired.rolloutPath,
-      createdAt: existing?.createdAt ?? createdAt,
+      createdAt,
       updatedAt,
+      createdAtMs:
+        existing?.createdAtMs ??
+        toUnixMilliseconds(record.startedAt) ??
+        createdAt * 1000,
+      updatedAtMs: toUnixMilliseconds(desired.updatedAt) ?? updatedAt * 1000,
       source: serializeThreadSource(meta?.source ?? existing?.source ?? record.source),
+      threadSource: resolveThreadSource(
+        meta?.threadSource ?? existing?.threadSource ?? meta?.source ?? existing?.source ?? record.source,
+      ),
       modelProvider: meta?.modelProvider ?? existing?.modelProvider ?? record.modelProvider,
       cwd: record.cwd,
       title: desired.threadName,
+      preview: resolveThreadPreview(record, existing),
       sandboxPolicy: meta?.sandboxPolicy ?? existing?.sandboxPolicy ?? DEFAULT_SANDBOX_POLICY,
       approvalMode: meta?.approvalMode ?? existing?.approvalMode ?? DEFAULT_APPROVAL_MODE,
       archived: desired.archived,
@@ -349,6 +358,55 @@ function serializeThreadSource(value: unknown) {
   return "vscode";
 }
 
+function resolveThreadSource(value: unknown) {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+
+    if (trimmed === "subagent") {
+      return "subagent";
+    }
+
+    if (trimmed === "user") {
+      return "user";
+    }
+
+    if (trimmed.startsWith("{")) {
+      try {
+        return resolveThreadSource(JSON.parse(trimmed) as unknown);
+      } catch {
+        return "user";
+      }
+    }
+
+    return "user";
+  }
+
+  if (value && typeof value === "object" && "subagent" in value) {
+    return "subagent";
+  }
+
+  return "user";
+}
+
+function resolveThreadPreview(
+  record: Pick<SessionRecord, "latestAgentMessageExcerpt" | "userPromptExcerpt">,
+  existing: Pick<CodexThreadRecord, "preview"> | null,
+) {
+  const latestAgent = record.latestAgentMessageExcerpt.trim();
+
+  if (latestAgent.length > 0) {
+    return latestAgent;
+  }
+
+  const firstUser = record.userPromptExcerpt.trim();
+
+  if (firstUser.length > 0) {
+    return firstUser;
+  }
+
+  return existing?.preview ?? "";
+}
+
 function createEmptyStats(): OfficialRepairStats {
   return {
     createdThreads: 0,
@@ -362,6 +420,11 @@ function createEmptyStats(): OfficialRepairStats {
 function toUnixSeconds(value: string) {
   const timestamp = Date.parse(value);
   return Number.isFinite(timestamp) ? Math.floor(timestamp / 1000) : Math.floor(Date.now() / 1000);
+}
+
+function toUnixMilliseconds(value: string) {
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : null;
 }
 
 function upsertSessionIndexEntry(

@@ -456,8 +456,8 @@ func backupManagerPruneDoesNotDependOnManifestLoadToOrderRestorePoints() throws 
 
         let manager = BackupManager(backupsRootURL: backupRoot)
 
-        // Fill up to the max restore point limit (20).
-        for index in 0..<20 {
+        // Fill up to the max restore point limit.
+        for index in 0..<5 {
             _ = try manager.createRestorePoint(
                 reason: "test prune \(index)",
                 summary: "seed",
@@ -487,7 +487,7 @@ func backupManagerPruneDoesNotDependOnManifestLoadToOrderRestorePoints() throws 
         )
         .filter { try $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true }
 
-        #expect(restorePointDirectories.count == 20)
+        #expect(restorePointDirectories.count == 5)
         #expect(FileManager.default.fileExists(atPath: corruptedURL.path) == false)
     }
 
@@ -560,7 +560,7 @@ func rolloutProviderSynchronizerRewritesSessionMetaAcrossRoots() throws {
     }
 
     @Test
-    func rolloutProviderSynchronizerPreservesFileModificationTimeWhenRewritingProvider() throws {
+    func rolloutProviderSynchronizerAdvancesFileModificationTimeWhenRewritingProvider() throws {
         let harness = try makeHarness()
         let sessionsRoot = harness.codexHomeURL.appendingPathComponent("sessions", isDirectory: true)
         let rolloutURL = try writeRollout(
@@ -587,7 +587,7 @@ func rolloutProviderSynchronizerRewritesSessionMetaAcrossRoots() throws {
 
         #expect(result.updatedFiles.map { $0.standardizedFileURL.path } == [rolloutURL.standardizedFileURL.path])
         #expect(try synchronizer.sessionMetaProvider(in: rolloutURL) == "openai")
-        #expect(abs(afterModificationDate.timeIntervalSince(beforeModificationDate)) < 1)
+        #expect(afterModificationDate > beforeModificationDate)
     }
 
 @Test

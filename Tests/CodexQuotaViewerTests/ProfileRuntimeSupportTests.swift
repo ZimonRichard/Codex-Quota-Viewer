@@ -75,6 +75,7 @@ func parseRuntimeConfigPreservesHashesInsideQuotedValues() {
 
     #expect(summary.model == "gpt-4#mini")
     #expect(summary.providerName == "openai")
+    #expect(summary.threadProviderID == "custom")
     #expect(summary.baseURL == "https://example.com/v1#fragment")
     #expect(summary.usesOpenAICompatibilityProvider)
 }
@@ -92,8 +93,10 @@ func parseRuntimeConfigAcceptsLegacyOpenAIBaseURLAssignment() {
     )
 
     #expect(summary.providerID == "openai")
+    #expect(summary.threadProviderID == "openai")
     #expect(summary.baseURL == "http://127.0.0.1:3001/v1")
     #expect(summary.model == "gpt-5.5")
+    #expect(summary.usesOpenAICompatibilityProvider == false)
 }
 
 @Test

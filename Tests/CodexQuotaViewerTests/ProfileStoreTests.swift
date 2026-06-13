@@ -61,3 +61,63 @@ func profileStoreDerivesCodexHomeFromCustomCurrentAuthURL() throws {
             == customCodexHomeURL.appendingPathComponent("sessions", isDirectory: true).path
     )
 }
+
+@Test
+func profileStorePrefersNewCodexSQLiteStateDatabaseWhenPresent() throws {
+    let harness = try makeHarness()
+    let sqliteDirectoryURL = harness.codexHomeURL.appendingPathComponent("sqlite", isDirectory: true)
+    try FileManager.default.createDirectory(at: sqliteDirectoryURL, withIntermediateDirectories: true)
+    try Data().write(
+        to: harness.codexHomeURL.appendingPathComponent("state_5.sqlite", isDirectory: false)
+    )
+    let sqliteStateURL = sqliteDirectoryURL.appendingPathComponent("state_5.sqlite", isDirectory: false)
+    try Data().write(to: sqliteStateURL)
+
+    let store = ProfileStore(
+        baseURL: harness.appSupportURL,
+        currentAuthURL: harness.codexHomeURL.appendingPathComponent("auth.json", isDirectory: false),
+        homeDirectoryOverride: harness.homeURL
+    )
+
+    #expect(store.stateDatabaseURL.path == sqliteStateURL.path)
+    #expect(store.stateDatabaseWALURL.path == sqliteStateURL.path + "-wal")
+    #expect(store.stateDatabaseSHMURL.path == sqliteStateURL.path + "-shm")
+}
+
+@Test
+func profileStoreFallsBackToLegacyRootStateDatabaseWhenSQLiteStateIsMissing() throws {
+    let harness = try makeHarness()
+    try FileManager.default.createDirectory(at: harness.codexHomeURL, withIntermediateDirectories: true)
+    let legacyStateURL = harness.codexHomeURL.appendingPathComponent("state_5.sqlite", isDirectory: false)
+    try Data().write(to: legacyStateURL)
+
+    let store = ProfileStore(
+        baseURL: harness.appSupportURL,
+        currentAuthURL: harness.codexHomeURL.appendingPathComponent("auth.json", isDirectory: false),
+        homeDirectoryOverride: harness.homeURL
+    )
+
+    #expect(store.stateDatabaseURL.path == legacyStateURL.path)
+}
+
+@Test
+func profileStorePrefersSQLiteStateDBOverLegacyRootStateDatabase() throws {
+    let harness = try makeHarness()
+    let sqliteDirectoryURL = harness.codexHomeURL.appendingPathComponent("sqlite", isDirectory: true)
+    try FileManager.default.createDirectory(at: sqliteDirectoryURL, withIntermediateDirectories: true)
+    try Data().write(
+        to: harness.codexHomeURL.appendingPathComponent("state_5.sqlite", isDirectory: false)
+    )
+    let sqliteStateURL = sqliteDirectoryURL.appendingPathComponent("state.db", isDirectory: false)
+    try Data().write(to: sqliteStateURL)
+
+    let store = ProfileStore(
+        baseURL: harness.appSupportURL,
+        currentAuthURL: harness.codexHomeURL.appendingPathComponent("auth.json", isDirectory: false),
+        homeDirectoryOverride: harness.homeURL
+    )
+
+    #expect(store.stateDatabaseURL.path == sqliteStateURL.path)
+    #expect(store.stateDatabaseWALURL.path == sqliteStateURL.path + "-wal")
+    #expect(store.stateDatabaseSHMURL.path == sqliteStateURL.path + "-shm")
+}

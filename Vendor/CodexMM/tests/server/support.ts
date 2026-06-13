@@ -150,7 +150,12 @@ export function readOfficialThread(codexHome: string, sessionId: string) {
           rollout_path as rolloutPath,
           archived,
           archived_at as archivedAt,
-          updated_at as updatedAt
+          created_at as createdAt,
+          updated_at as updatedAt,
+          created_at_ms as createdAtMs,
+          updated_at_ms as updatedAtMs,
+          thread_source as threadSource,
+          preview
         from threads
         where id = ?
       `,
@@ -162,7 +167,12 @@ export function readOfficialThread(codexHome: string, sessionId: string) {
         rolloutPath: string;
         archived: number;
         archivedAt: number | null;
+        createdAt: number;
         updatedAt: number;
+        createdAtMs: number | null;
+        updatedAtMs: number | null;
+        threadSource: string | null;
+        preview: string;
       }
     | undefined;
   db.close();
@@ -311,7 +321,11 @@ async function seedOfficialStateDatabase(codexHome: string) {
       memory_mode text not null default 'enabled',
       model text,
       reasoning_effort text,
-      agent_path text
+      agent_path text,
+      created_at_ms integer,
+      updated_at_ms integer,
+      thread_source text,
+      preview text not null default ''
     );
 
     create index if not exists idx_threads_archived on threads(archived);
@@ -333,23 +347,28 @@ function upsertOfficialThread(
   },
 ) {
   const db = new Database(path.join(codexHome, "state_5.sqlite"));
-  const timestamp = Math.floor(Date.parse(thread.startedAt) / 1000);
+  const timestampMs = Date.parse(thread.startedAt);
+  const timestamp = Math.floor(timestampMs / 1000);
   db.prepare(
     `
       insert into threads (
         id, rollout_path, created_at, updated_at, source, model_provider, cwd, title,
         sandbox_policy, approval_mode, tokens_used, has_user_event, archived, archived_at,
-        cli_version, first_user_message, memory_mode
+        cli_version, first_user_message, memory_mode, created_at_ms, updated_at_ms,
+        thread_source, preview
       ) values (
         @id, @rolloutPath, @createdAt, @updatedAt, @source, @modelProvider, @cwd, @title,
         @sandboxPolicy, @approvalMode, 0, 1, 0, null,
-        @cliVersion, @firstUserMessage, 'enabled'
+        @cliVersion, @firstUserMessage, 'enabled', @createdAtMs, @updatedAtMs,
+        'user', @preview
       )
       on conflict(id) do update set
         rollout_path = excluded.rollout_path,
         updated_at = excluded.updated_at,
+        updated_at_ms = excluded.updated_at_ms,
         cwd = excluded.cwd,
         title = excluded.title,
+        preview = excluded.preview,
         cli_version = excluded.cli_version,
         first_user_message = excluded.first_user_message
     `,
@@ -358,10 +377,13 @@ function upsertOfficialThread(
     rolloutPath: thread.rolloutPath,
     createdAt: timestamp,
     updatedAt: timestamp,
+    createdAtMs: timestampMs,
+    updatedAtMs: timestampMs,
     source: "desktop",
     modelProvider: thread.modelProvider,
     cwd: thread.cwd,
     title: thread.title,
+    preview: thread.firstUserMessage,
     sandboxPolicy: "workspace-write",
     approvalMode: "default",
     cliVersion: thread.cliVersion,

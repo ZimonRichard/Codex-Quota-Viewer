@@ -121,10 +121,13 @@ final class SwitchOrchestrator {
             restorePoint = createdRestorePoint
             preserveUserVisibleThreadTitles(userVisibleTitles, reason: "post-backup")
             let writer = ProtectedFileMutationContext(restorePoint: createdRestorePoint)
+            let targetConfigData = try effectiveTargetConfigData(for: targetProfile)
+            let targetConfigSummary = parseRuntimeConfig(targetConfigData)
             let mergedConfig = try mergeRuntimeConfig(
                 currentConfigData: try store.currentConfigData(),
-                targetConfigData: try effectiveTargetConfigData(for: targetProfile),
+                targetConfigData: targetConfigData,
                 preserveExistingProviderSections: targetProfile.authMode != .chatgpt
+                    && !targetConfigSummary.usesOpenAICompatibilityProvider
             )
 
             try writer.write(targetProfile.runtimeMaterial.authData, to: store.currentAuthURL)

@@ -8,10 +8,14 @@ export type CodexThreadRecord = {
   rolloutPath: string;
   createdAt: number;
   updatedAt: number;
+  createdAtMs: number | null;
+  updatedAtMs: number | null;
   source: string;
+  threadSource: string | null;
   modelProvider: string;
   cwd: string;
   title: string;
+  preview: string;
   sandboxPolicy: string;
   approvalMode: string;
   hasUserEvent: boolean;
@@ -31,12 +35,14 @@ export type CodexThreadUpsert = Omit<CodexThreadRecord, "hasUserEvent"> & {
 
 export class CodexThreadStateRepository {
   private readonly db: Database.Database | null;
+  private readonly columns: Set<string>;
 
   constructor(codexHome: string) {
     const databasePath = resolveStateDatabasePath(codexHome);
 
     if (!databasePath) {
       this.db = null;
+      this.columns = new Set();
       return;
     }
 
@@ -55,10 +61,12 @@ export class CodexThreadStateRepository {
     ) {
       db.close();
       this.db = null;
+      this.columns = new Set();
       return;
     }
 
     this.db = db;
+    this.columns = readTableColumns(db, "threads");
   }
 
   listThreads() {
@@ -70,25 +78,7 @@ export class CodexThreadStateRepository {
       .prepare(
         `
           select
-            id,
-            rollout_path as rolloutPath,
-            created_at as createdAt,
-            updated_at as updatedAt,
-            source,
-            model_provider as modelProvider,
-            cwd,
-            title,
-            sandbox_policy as sandboxPolicy,
-            approval_mode as approvalMode,
-            has_user_event as hasUserEvent,
-            archived,
-            archived_at as archivedAt,
-            cli_version as cliVersion,
-            first_user_message as firstUserMessage,
-            memory_mode as memoryMode,
-            model,
-            reasoning_effort as reasoningEffort,
-            agent_path as agentPath
+            ${this.selectColumns()}
           from threads
           order by updated_at desc, id asc
         `,
@@ -107,25 +97,7 @@ export class CodexThreadStateRepository {
       .prepare(
         `
           select
-            id,
-            rollout_path as rolloutPath,
-            created_at as createdAt,
-            updated_at as updatedAt,
-            source,
-            model_provider as modelProvider,
-            cwd,
-            title,
-            sandbox_policy as sandboxPolicy,
-            approval_mode as approvalMode,
-            has_user_event as hasUserEvent,
-            archived,
-            archived_at as archivedAt,
-            cli_version as cliVersion,
-            first_user_message as firstUserMessage,
-            memory_mode as memoryMode,
-            model,
-            reasoning_effort as reasoningEffort,
-            agent_path as agentPath
+            ${this.selectColumns()}
           from threads
           where id = ?
         `,
@@ -143,33 +115,21 @@ export class CodexThreadStateRepository {
     const existing = this.getThread(input.id);
     const next = buildThreadRecord(input, existing);
 
-    if (existing && areSameThread(existing, next)) {
+    if (existing && areSameThread(existing, next, this.columns)) {
       return "unchanged" as const;
     }
 
     if (existing) {
+      const updates = writableColumnMappings(this.columns)
+        .filter(([column]) => column !== "id")
+        .map(([column, param]) => `${column} = @${param}`)
+        .join(",\n                ");
+
       this.db
         .prepare(
           `
             update threads
-            set rollout_path = @rolloutPath,
-                created_at = @createdAt,
-                updated_at = @updatedAt,
-                source = @source,
-                model_provider = @modelProvider,
-                cwd = @cwd,
-                title = @title,
-                sandbox_policy = @sandboxPolicy,
-                approval_mode = @approvalMode,
-                has_user_event = @hasUserEvent,
-                archived = @archived,
-                archived_at = @archivedAt,
-                cli_version = @cliVersion,
-                first_user_message = @firstUserMessage,
-                memory_mode = @memoryMode,
-                model = @model,
-                reasoning_effort = @reasoningEffort,
-                agent_path = @agentPath
+            set ${updates}
             where id = @id
           `,
         )
@@ -178,49 +138,17 @@ export class CodexThreadStateRepository {
       return "updated" as const;
     }
 
+    const mappings = writableColumnMappings(this.columns);
+    const columns = mappings.map(([column]) => column).join(",\n            ");
+    const values = mappings.map(([, param]) => `@${param}`).join(",\n            ");
+
     this.db
       .prepare(
         `
           insert into threads (
-            id,
-            rollout_path,
-            created_at,
-            updated_at,
-            source,
-            model_provider,
-            cwd,
-            title,
-            sandbox_policy,
-            approval_mode,
-            has_user_event,
-            archived,
-            archived_at,
-            cli_version,
-            first_user_message,
-            memory_mode,
-            model,
-            reasoning_effort,
-            agent_path
+            ${columns}
           ) values (
-            @id,
-            @rolloutPath,
-            @createdAt,
-            @updatedAt,
-            @source,
-            @modelProvider,
-            @cwd,
-            @title,
-            @sandboxPolicy,
-            @approvalMode,
-            @hasUserEvent,
-            @archived,
-            @archivedAt,
-            @cliVersion,
-            @firstUserMessage,
-            @memoryMode,
-            @model,
-            @reasoningEffort,
-            @agentPath
+            ${values}
           )
         `,
       )
@@ -237,6 +165,40 @@ export class CodexThreadStateRepository {
     const result = this.db.prepare("delete from threads where id = ?").run(threadId);
     return result.changes > 0;
   }
+
+  private selectColumns() {
+    return [
+      "id",
+      "rollout_path as rolloutPath",
+      "created_at as createdAt",
+      "updated_at as updatedAt",
+      this.selectOptionalColumn("created_at_ms", "createdAtMs", "null"),
+      this.selectOptionalColumn("updated_at_ms", "updatedAtMs", "null"),
+      "source",
+      this.selectOptionalColumn("thread_source", "threadSource", "null"),
+      "model_provider as modelProvider",
+      "cwd",
+      "title",
+      this.selectOptionalColumn("preview", "preview", "''"),
+      "sandbox_policy as sandboxPolicy",
+      "approval_mode as approvalMode",
+      "has_user_event as hasUserEvent",
+      "archived",
+      "archived_at as archivedAt",
+      "cli_version as cliVersion",
+      "first_user_message as firstUserMessage",
+      "memory_mode as memoryMode",
+      "model",
+      "reasoning_effort as reasoningEffort",
+      "agent_path as agentPath",
+    ].join(",\n            ");
+  }
+
+  private selectOptionalColumn(column: string, alias: string, fallback: string) {
+    return this.columns.has(column)
+      ? `${column} as ${alias}`
+      : `${fallback} as ${alias}`;
+  }
 }
 
 type ThreadRow = {
@@ -244,10 +206,14 @@ type ThreadRow = {
   rolloutPath: string;
   createdAt: number;
   updatedAt: number;
+  createdAtMs: number | null;
+  updatedAtMs: number | null;
   source: string;
+  threadSource: string | null;
   modelProvider: string;
   cwd: string;
   title: string;
+  preview: string | null;
   sandboxPolicy: string;
   approvalMode: string;
   hasUserEvent: number;
@@ -261,16 +227,52 @@ type ThreadRow = {
   agentPath: string | null;
 };
 
+type DatabaseThreadParams = ReturnType<typeof toDatabaseParams>;
+type ColumnMapping = [column: string, param: keyof DatabaseThreadParams];
+
+const BASE_WRITE_COLUMN_MAPPINGS: ColumnMapping[] = [
+  ["id", "id"],
+  ["rollout_path", "rolloutPath"],
+  ["created_at", "createdAt"],
+  ["updated_at", "updatedAt"],
+  ["source", "source"],
+  ["model_provider", "modelProvider"],
+  ["cwd", "cwd"],
+  ["title", "title"],
+  ["sandbox_policy", "sandboxPolicy"],
+  ["approval_mode", "approvalMode"],
+  ["has_user_event", "hasUserEvent"],
+  ["archived", "archived"],
+  ["archived_at", "archivedAt"],
+  ["cli_version", "cliVersion"],
+  ["first_user_message", "firstUserMessage"],
+  ["memory_mode", "memoryMode"],
+  ["model", "model"],
+  ["reasoning_effort", "reasoningEffort"],
+  ["agent_path", "agentPath"],
+];
+
+const OPTIONAL_WRITE_COLUMN_MAPPINGS: ColumnMapping[] = [
+  ["created_at_ms", "createdAtMs"],
+  ["updated_at_ms", "updatedAtMs"],
+  ["thread_source", "threadSource"],
+  ["preview", "preview"],
+];
+
 function buildThreadRecord(input: CodexThreadUpsert, existing: CodexThreadRecord | null) {
   return {
     id: input.id,
     rolloutPath: input.rolloutPath,
     createdAt: input.createdAt,
     updatedAt: input.updatedAt,
+    createdAtMs: input.createdAtMs ?? existing?.createdAtMs ?? input.createdAt * 1000,
+    updatedAtMs: input.updatedAtMs ?? input.updatedAt * 1000,
     source: input.source,
+    threadSource: normalizeThreadSource(input.threadSource ?? existing?.threadSource),
     modelProvider: input.modelProvider,
     cwd: input.cwd,
     title: input.title,
+    preview: input.preview,
     sandboxPolicy: input.sandboxPolicy,
     approvalMode: input.approvalMode,
     hasUserEvent: input.hasUserEvent ?? existing?.hasUserEvent ?? true,
@@ -285,8 +287,12 @@ function buildThreadRecord(input: CodexThreadUpsert, existing: CodexThreadRecord
   } satisfies CodexThreadRecord;
 }
 
-function areSameThread(left: CodexThreadRecord, right: CodexThreadRecord) {
-  return (
+function areSameThread(
+  left: CodexThreadRecord,
+  right: CodexThreadRecord,
+  columns: Set<string>,
+) {
+  const baseMatches =
     left.rolloutPath === right.rolloutPath &&
     left.createdAt === right.createdAt &&
     left.updatedAt === right.updatedAt &&
@@ -304,7 +310,17 @@ function areSameThread(left: CodexThreadRecord, right: CodexThreadRecord) {
     left.memoryMode === right.memoryMode &&
     left.model === right.model &&
     left.reasoningEffort === right.reasoningEffort &&
-    left.agentPath === right.agentPath
+    left.agentPath === right.agentPath;
+
+  if (!baseMatches) {
+    return false;
+  }
+
+  return (
+    (!columns.has("created_at_ms") || left.createdAtMs === right.createdAtMs) &&
+    (!columns.has("updated_at_ms") || left.updatedAtMs === right.updatedAtMs) &&
+    (!columns.has("thread_source") || left.threadSource === right.threadSource) &&
+    (!columns.has("preview") || left.preview === right.preview)
   );
 }
 
@@ -320,19 +336,48 @@ function mapThreadRow(row: ThreadRow): CodexThreadRecord {
     ...row,
     archived: row.archived === 1 ? 1 : 0,
     hasUserEvent: row.hasUserEvent === 1,
+    preview: row.preview ?? "",
   };
 }
 
+function writableColumnMappings(columns: Set<string>) {
+  return [
+    ...BASE_WRITE_COLUMN_MAPPINGS,
+    ...OPTIONAL_WRITE_COLUMN_MAPPINGS.filter(([column]) => columns.has(column)),
+  ];
+}
 
-function resolveStateDatabasePath(codexHome: string) {
+function readTableColumns(db: Database.Database, tableName: string) {
+  const rows = db.prepare(`pragma table_info(${tableName})`).all() as Array<{ name: string }>;
+  return new Set(rows.map((row) => row.name));
+}
+
+function normalizeThreadSource(value: string | null | undefined) {
+  const trimmed = value?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : "user";
+}
+
+export function resolveStateDatabasePath(codexHome: string) {
+  const sqliteDirectory = path.join(codexHome, "sqlite");
+  const sqliteCandidates = listStateDatabaseCandidates(sqliteDirectory);
+
+  if (sqliteCandidates.length > 0) {
+    return sqliteCandidates[0];
+  }
+
+  const sqliteStateDb = path.join(sqliteDirectory, "state.db");
+
+  if (existsSync(sqliteStateDb)) {
+    return sqliteStateDb;
+  }
+
   const directCandidates = listStateDatabaseCandidates(codexHome);
 
   if (directCandidates.length > 0) {
     return directCandidates[0];
   }
 
-  const sqliteStateDb = path.join(codexHome, "sqlite", "state.db");
-  return existsSync(sqliteStateDb) ? sqliteStateDb : null;
+  return null;
 }
 
 function listStateDatabaseCandidates(codexHome: string) {

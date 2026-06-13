@@ -17,6 +17,8 @@ type SessionMetaPayload = {
   cwd?: unknown;
   originator?: unknown;
   source?: unknown;
+  thread_source?: unknown;
+  threadSource?: unknown;
   cli_version?: unknown;
   cliVersion?: unknown;
   model_provider?: unknown;
@@ -39,6 +41,7 @@ export type SessionMetaSnapshot = {
   startedAt: string;
   cwd: string;
   source: unknown;
+  threadSource: string | null;
   cliVersion: string;
   modelProvider: string;
   model: string | null;
@@ -81,6 +84,10 @@ const sessionCatalogCache = new Map<
   string,
   CachedFileValue<ParsedSessionCatalog | null>
 >();
+
+export function clearSessionParserCache() {
+  sessionCatalogCache.clear();
+}
 
 export async function parseSessionFile(
   filePath: string,
@@ -387,6 +394,9 @@ export async function readSessionMetaSnapshot(
         startedAt,
         cwd,
         source: payload.source ?? "vscode",
+        threadSource: normalizeNullableString(
+          payload.thread_source ?? payload.threadSource,
+        ),
         cliVersion: normalizeOptionalString(
           payload.cli_version ?? payload.cliVersion,
           "unknown",

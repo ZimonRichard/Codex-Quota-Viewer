@@ -107,7 +107,7 @@ final class BackupManager {
     private let fileManager = FileManager.default
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
-    private let maxRestorePoints = 20
+    private let maxRestorePoints = 5
     private let privateDirectoryPermissions = NSNumber(value: Int16(0o700))
     private let privateFilePermissions = NSNumber(value: Int16(0o600))
     private let protectedRestorePointIDsProvider: () -> Set<String>

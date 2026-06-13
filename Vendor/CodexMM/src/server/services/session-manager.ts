@@ -41,6 +41,7 @@ import {
 } from "./session-manager-helpers";
 import { CodexOfficialThreadBridge } from "./codex-official-thread-bridge";
 import {
+  clearSessionParserCache,
   DEFAULT_TIMELINE_PAGE_SIZE,
   MAX_TIMELINE_PAGE_SIZE,
   parseSessionCatalog,
@@ -117,6 +118,7 @@ export function createSessionManager(config: ManagerConfig) {
   }
 
   async function scanAndIndexSessions() {
+    clearSessionParserCache();
     await ensureRoots();
     const [activeEntries, archivedEntries, snapshotEntries] = await Promise.all([
       collectSessions(roots.sessionsRoot),
@@ -194,6 +196,7 @@ export function createSessionManager(config: ManagerConfig) {
   }
 
   async function refreshIndexedSessions(sessionIds: string[]) {
+    clearSessionParserCache();
     await ensureRoots();
     const latestAuditBySessionId = new Map(
       repository.listLatestAuditEntries().map((entry) => [entry.sessionId, entry]),

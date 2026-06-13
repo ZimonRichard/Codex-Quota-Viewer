@@ -1,4 +1,15 @@
-import { access, mkdir, readFile, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  access,
+  mkdir,
+  readFile,
+  realpath,
+  rename,
+  rm,
+  stat,
+  symlink,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import path from "node:path";
 
 import Database from "better-sqlite3";
@@ -93,6 +104,74 @@ describe("SessionManager", () => {
     expect(secondPass.record.indexedAt).not.toBe(firstPass.record.indexedAt);
     expect(readOfficialThread(harness.codexHome, "session-rescan-idempotent")).toBeNull();
     await expect(readSessionIndexEntry(harness.codexHome, "session-rescan-idempotent")).resolves.toBeNull();
+  });
+
+  test("rescans invalidate parser cache when provider changes without size or mtime changes", async () => {
+    const filePath = await seedSession(harness.codexHome, {
+      id: "session-provider-cache",
+      cwd: "/work/provider-cache",
+      startedAt: "2026-03-29T10:16:37.087Z",
+      firstUserMessage: "切换 provider 后重新扫描",
+      latestAgentMessage: "应该读到新的 provider。",
+    });
+    const fixedTime = new Date("2026-03-29T10:20:00.000Z");
+    await utimes(filePath, fixedTime, fixedTime);
+
+    await manager.rescan();
+    const firstPass = await manager.getSessionDetail("session-provider-cache");
+    const beforeStats = await stat(filePath);
+
+    expect(firstPass.record.modelProvider).toBe("openai");
+
+    const updatedText = (await readFile(filePath, "utf8")).replace(
+      '"model_provider":"openai"',
+      '"model_provider":"custom"',
+    );
+    await writeFile(filePath, updatedText);
+    await utimes(filePath, fixedTime, fixedTime);
+
+    const afterStats = await stat(filePath);
+    expect(afterStats.size).toBe(beforeStats.size);
+    expect(afterStats.mtimeMs).toBe(beforeStats.mtimeMs);
+
+    await manager.rescan();
+    const secondPass = await manager.getSessionDetail("session-provider-cache");
+
+    expect(secondPass.record.modelProvider).toBe("custom");
+  });
+
+  test("targeted official repairs invalidate parser cache before refreshing sessions", async () => {
+    const filePath = await seedSession(harness.codexHome, {
+      id: "session-provider-targeted-cache",
+      cwd: "/work/provider-targeted-cache",
+      startedAt: "2026-03-29T10:16:37.087Z",
+      firstUserMessage: "定向修复时重新读取 provider",
+      latestAgentMessage: "应该读到新的 provider。",
+    });
+    const fixedTime = new Date("2026-03-29T10:20:00.000Z");
+    await utimes(filePath, fixedTime, fixedTime);
+
+    await manager.rescan();
+    const firstPass = await manager.getSessionDetail("session-provider-targeted-cache");
+    const beforeStats = await stat(filePath);
+
+    expect(firstPass.record.modelProvider).toBe("openai");
+
+    const updatedText = (await readFile(filePath, "utf8")).replace(
+      '"model_provider":"openai"',
+      '"model_provider":"custom"',
+    );
+    await writeFile(filePath, updatedText);
+    await utimes(filePath, fixedTime, fixedTime);
+
+    const afterStats = await stat(filePath);
+    expect(afterStats.size).toBe(beforeStats.size);
+    expect(afterStats.mtimeMs).toBe(beforeStats.mtimeMs);
+
+    await manager.repairOfficialThreads(["session-provider-targeted-cache"]);
+    const secondPass = await manager.getSessionDetail("session-provider-targeted-cache");
+
+    expect(secondPass.record.modelProvider).toBe("custom");
   });
 
   test("rescans use the rollout last event time instead of the scan time", async () => {
@@ -379,6 +458,10 @@ describe("SessionManager", () => {
       id: "session-backfill-official",
       archived: 0,
       rolloutPath: filePath,
+      createdAtMs: Date.parse("2026-03-29T10:16:37.087Z"),
+      updatedAtMs: Date.parse("2026-03-29T10:16:37.087Z"),
+      threadSource: "user",
+      preview: "我会补齐官方需要的数据。",
     });
     await expect(readSessionIndexEntry(harness.codexHome, "session-backfill-official")).resolves.toMatchObject({
       id: "session-backfill-official",
@@ -412,6 +495,10 @@ describe("SessionManager", () => {
       id: "session-repair-idempotent",
       archived: 0,
       rolloutPath: filePath,
+      createdAtMs: Date.parse("2026-03-29T10:16:37.087Z"),
+      updatedAtMs: Date.parse("2026-03-29T10:16:37.087Z"),
+      threadSource: "user",
+      preview: "第二次不应该重复写入。",
     });
 
     const secondRepair = await manager.repairOfficialThreads([

@@ -262,6 +262,10 @@ final class AppController: NSObject, NSMenuDelegate {
         },
         onStateChanged: { [weak self] in
             self?.refreshPresentationFromProfileRefreshController()
+        },
+        currentRuntimeCaptureAllowed: { [weak self] in
+            guard let self else { return true }
+            return (try? self.chatGPTProviderModeManager.isActive()) != true
         }
     )
 
@@ -769,8 +773,7 @@ final class AppController: NSObject, NSMenuDelegate {
     private func chatGPTProviderModeMenuPresentation() -> ChatGPTProviderModeMenuPresentation {
         buildChatGPTProviderModeMenuPresentation(
             modeState: chatGPTProviderModeState,
-            currentAuthMode: currentProviderProfile?.authMode
-                ?? (try? store.currentAuthData()).map(resolveAuthMode(authData:)),
+            currentAuthMode: currentCodexAuthMode,
             savedAPIAccountCount: vaultSnapshot?.accounts.filter { $0.metadata.authMode == .apiKey }.count ?? 0,
             isPerformingSafeSwitchOperation: isPerformingSafeSwitchOperation
         )
@@ -874,6 +877,11 @@ final class AppController: NSObject, NSMenuDelegate {
             chatGPTProviderModeState: chatGPTProviderModeState,
             currentConfigData: profileRefreshController.currentRuntimeMaterial?.configData
         )
+    }
+
+    private var currentCodexAuthMode: CodexAuthMode? {
+        currentProviderProfile?.authMode
+            ?? (try? store.currentAuthData()).map(resolveAuthMode(authData:))
     }
 
     private func confirmSafeSwitch(
@@ -1033,6 +1041,7 @@ final class AppController: NSObject, NSMenuDelegate {
         guard let targetProfile = availableSwitchTargets.first(where: { $0.id == identifier }) else {
             return
         }
+
         switchSafely(to: targetProfile)
     }
 
@@ -1115,16 +1124,24 @@ final class AppController: NSObject, NSMenuDelegate {
         }
     }
 
-    private func switchToChatGPTProviderMode() {
-        guard !isPerformingSafeSwitchOperation,
-              let snapshot = vaultSnapshot,
-              let selectedRecord = chatGPTProviderModePromptController.promptForProvider(
+    private func switchToChatGPTProviderMode(preselectedRecord: VaultAccountRecord? = nil) {
+        let selectedRecord: VaultAccountRecord?
+        if let preselectedRecord {
+            selectedRecord = preselectedRecord
+        } else if let snapshot = vaultSnapshot {
+            selectedRecord = chatGPTProviderModePromptController.promptForProvider(
                 records: snapshot.accounts,
                 runModalPresentation: { [weak self] body in
                     guard let self else { return nil }
                     return self.foregroundPresentationController.runModal(body)
                 }
-              ),
+            )
+        } else {
+            selectedRecord = nil
+        }
+
+        guard !isPerformingSafeSwitchOperation,
+              let selectedRecord,
               beginForegroundOperation(.chatGPTProviderMode) else {
             return
         }
@@ -1155,6 +1172,28 @@ final class AppController: NSObject, NSMenuDelegate {
 
             do {
                 let result = try await self.chatGPTProviderModeManager.enter(providerRecord: selectedRecord)
+                let writer = ProtectedFileMutationContext(restorePoint: result.restorePoint)
+                do {
+                    _ = try self.vaultStore.noteAccountUsed(id: selectedRecord.id, writer: writer)
+                } catch {
+                    self.statusNotice = self.localizedErrorNotice(
+                        kind: .warning,
+                        en: "Provider switched successfully, but the saved account usage timestamp could not be updated",
+                        zh: "Provider 已切换，但无法更新账号最近使用时间",
+                        error: error
+                    )
+                }
+                self.settings.preferredAccountID = selectedRecord.id
+                do {
+                    try self.store.saveSettings(self.settings, writer: writer)
+                } catch {
+                    self.statusNotice = self.localizedErrorNotice(
+                        kind: .warning,
+                        en: "Provider switched successfully, but the preferred account could not be saved",
+                        zh: "Provider 已切换，但无法保存默认账号",
+                        error: error
+                    )
+                }
                 self.chatGPTProviderModeState = try? self.chatGPTProviderModeManager.currentModeState()
                 self.presentSafeSwitchNotice(
                     MenuNotice(

@@ -173,7 +173,10 @@ final class ChatGPTProviderModeManager {
         return ChatGPTProviderModePreview(
             providerRecord: providerRecord,
             targetProviderID: targetProviderID,
-            filesToBackup: filesToBackup(rolloutFilesToUpdate: rolloutFilesToUpdate),
+            filesToBackup: filesToBackup(
+                providerRecord: providerRecord,
+                rolloutFilesToUpdate: rolloutFilesToUpdate
+            ),
             rolloutFilesToUpdate: rolloutFilesToUpdate,
             codexWasRunning: desktopController.isRunning
         )
@@ -295,9 +298,11 @@ final class ChatGPTProviderModeManager {
         return providerID
     }
 
-    private func filesToBackup(rolloutFilesToUpdate: [URL]) -> [URL] {
+    private func filesToBackup(providerRecord: VaultAccountRecord, rolloutFilesToUpdate: [URL]) -> [URL] {
         deduplicatedStandardizedFileURLs(
-            store.runtimeSwitchFileURLs(additionalFiles: rolloutFilesToUpdate + [stateURL])
+            store.runtimeSwitchFileURLs(
+                additionalFiles: rolloutFilesToUpdate + providerRecord.protectedFileURLs + [stateURL]
+            )
         )
     }
 

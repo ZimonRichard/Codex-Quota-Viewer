@@ -77,6 +77,7 @@ final class ProfileRefreshController {
     typealias SafeSwitchNoticePresenter = (MenuNotice, MenuNoticeLifetime) -> Void
     typealias StatusNoticeSetter = (MenuNotice) -> Void
     typealias StateChangeHandler = () -> Void
+    typealias CurrentRuntimeCapturePermission = () -> Bool
 
     private let store: ProfileStore
     private let vaultStore: VaultAccountStore
@@ -93,6 +94,7 @@ final class ProfileRefreshController {
     private let presentSafeSwitchNotice: SafeSwitchNoticePresenter
     private let setStatusNotice: StatusNoticeSetter
     private let onStateChanged: StateChangeHandler
+    private let currentRuntimeCaptureAllowed: CurrentRuntimeCapturePermission
 
     private var isFetchingCurrent = false
     private var pendingRefreshIntent: ProfileRefreshIntent?
@@ -124,7 +126,8 @@ final class ProfileRefreshController {
         userFacingMessage: @escaping (Error) -> String,
         presentSafeSwitchNotice: @escaping SafeSwitchNoticePresenter,
         setStatusNotice: @escaping StatusNoticeSetter,
-        onStateChanged: @escaping StateChangeHandler
+        onStateChanged: @escaping StateChangeHandler,
+        currentRuntimeCaptureAllowed: @escaping CurrentRuntimeCapturePermission = { true }
     ) {
         self.store = store
         self.vaultStore = vaultStore
@@ -141,6 +144,7 @@ final class ProfileRefreshController {
         self.presentSafeSwitchNotice = presentSafeSwitchNotice
         self.setStatusNotice = setStatusNotice
         self.onStateChanged = onStateChanged
+        self.currentRuntimeCaptureAllowed = currentRuntimeCaptureAllowed
     }
 
     var isRefreshing: Bool {
@@ -292,6 +296,11 @@ final class ProfileRefreshController {
     }
 
     private func bootstrapVaultAccounts(currentRuntimeMaterial: ProfileRuntimeMaterial?) {
+        guard currentRuntimeCaptureAllowed() else {
+            AppLog.refresh.info("Skipping current runtime capture while provider mode is active")
+            return
+        }
+
         do {
             let outcome = try vaultBootstrapCoordinator.bootstrap(
                 currentRuntimeMaterial: currentRuntimeMaterial,

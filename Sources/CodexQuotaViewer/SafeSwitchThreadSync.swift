@@ -373,9 +373,6 @@ final class RolloutProviderSynchronizer {
         if let creationDate = originalAttributes?[.creationDate] {
             preservedAttributes[.creationDate] = creationDate
         }
-        if let modificationDate = originalAttributes?[.modificationDate] {
-            preservedAttributes[.modificationDate] = modificationDate
-        }
         if !preservedAttributes.isEmpty {
             try fileManager.setAttributes(preservedAttributes, ofItemAtPath: fileURL.path)
         }

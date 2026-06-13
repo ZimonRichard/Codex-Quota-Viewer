@@ -73,9 +73,13 @@ final class ProfileStore {
             .appendingPathComponent("config.toml", isDirectory: false)
         sessionsRootURL = resolvedCodexHomeURL.appendingPathComponent("sessions", isDirectory: true)
         archivedSessionsRootURL = resolvedCodexHomeURL.appendingPathComponent("archived_sessions", isDirectory: true)
-        stateDatabaseURL = resolvedCodexHomeURL.appendingPathComponent("state_5.sqlite", isDirectory: false)
-        stateDatabaseWALURL = resolvedCodexHomeURL.appendingPathComponent("state_5.sqlite-wal", isDirectory: false)
-        stateDatabaseSHMURL = resolvedCodexHomeURL.appendingPathComponent("state_5.sqlite-shm", isDirectory: false)
+        let stateDatabaseLocation = CodexStateDatabaseLocator.locate(
+            codexHomeURL: resolvedCodexHomeURL,
+            fileManager: fileManager
+        )
+        stateDatabaseURL = stateDatabaseLocation.databaseURL
+        stateDatabaseWALURL = stateDatabaseLocation.walURL
+        stateDatabaseSHMURL = stateDatabaseLocation.shmURL
         sessionIndexURL = resolvedCodexHomeURL.appendingPathComponent("session_index.jsonl", isDirectory: false)
         sessionManagerHomeURL = home.appendingPathComponent(".codex-session-manager", isDirectory: true)
         sessionManagerDatabaseURL = sessionManagerHomeURL.appendingPathComponent("index.db", isDirectory: false)
