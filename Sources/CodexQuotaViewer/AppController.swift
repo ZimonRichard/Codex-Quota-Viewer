@@ -315,6 +315,7 @@ final class AppController: NSObject, NSMenuDelegate {
 
     func menuWillOpen(_ menu: NSMenu) {
         refreshTimeSensitivePresentationState(now: Date())
+        alignQuotaWorkPlanMenuItemWidthToMenu()
         menuTrackingGate.beginTracking()
         refreshSavedAccountsOnMenuOpen()
     }
@@ -404,6 +405,9 @@ final class AppController: NSObject, NSMenuDelegate {
             }
             configureQuotaWorkPlanMenuItem(item)
             didUpdate = true
+        }
+        if didUpdate {
+            alignQuotaWorkPlanMenuItemWidthToMenu()
         }
         return didUpdate
     }
@@ -505,6 +509,7 @@ final class AppController: NSObject, NSMenuDelegate {
             action: #selector(quitTapped),
             enabled: true
         )
+        alignQuotaWorkPlanMenuItemWidthToMenu()
     }
 
     private func updateMenuInPlaceIfPossible() -> Bool {
@@ -561,7 +566,27 @@ final class AppController: NSObject, NSMenuDelegate {
         quitItem.target = self
         quitItem.isEnabled = true
 
+        alignQuotaWorkPlanMenuItemWidthToMenu()
         return true
+    }
+
+    private func alignQuotaWorkPlanMenuItemWidthToMenu() {
+        let toggleViews = menu.items.compactMap { $0.view as? QuotaWorkPlanMenuToggleView }
+        guard !toggleViews.isEmpty else {
+            return
+        }
+
+        toggleViews.forEach {
+            $0.resizeToMenuWidth(QuotaWorkPlanMenuToggleView.minimumWidth)
+        }
+
+        let menuWidth = max(
+            QuotaWorkPlanMenuToggleView.minimumWidth,
+            ceil(menu.size.width)
+        )
+        for toggleView in toggleViews {
+            toggleView.resizeToMenuWidth(menuWidth)
+        }
     }
 
     private func visibleMenuNotice() -> MenuNotice? {

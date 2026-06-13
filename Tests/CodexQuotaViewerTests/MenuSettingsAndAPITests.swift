@@ -26,6 +26,23 @@ func deferredMenuPresentationQueueDrainsAfterMenuCloses() {
     #expect(queue.actions.isEmpty)
 }
 
+@MainActor
+@Test
+func quotaWorkPlanMenuToggleViewResizesWithMenuWidth() {
+    let view = QuotaWorkPlanMenuToggleView()
+
+    #expect(view.frame.width == QuotaWorkPlanMenuToggleView.minimumWidth)
+    #expect(view.intrinsicContentSize.width == QuotaWorkPlanMenuToggleView.minimumWidth)
+
+    view.resizeToMenuWidth(620.2)
+    #expect(view.frame.width == 621)
+    #expect(view.intrinsicContentSize.width == 621)
+
+    view.resizeToMenuWidth(300)
+    #expect(view.frame.width == QuotaWorkPlanMenuToggleView.minimumWidth)
+    #expect(view.intrinsicContentSize.width == QuotaWorkPlanMenuToggleView.minimumWidth)
+}
+
 @Test
 func settingsAccountSectionsGroupAndSortAccountsForHumanScanning() {
     withExclusiveAppLocalization {

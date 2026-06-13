@@ -22,7 +22,7 @@ final class QuotaWorkPlanMenuToggleView: NSView {
     }
 
     override var intrinsicContentSize: NSSize {
-        NSSize(width: Self.minimumWidth, height: Self.height)
+        NSSize(width: max(Self.minimumWidth, frame.width), height: Self.height)
     }
 
     func apply(workPlan: QuotaWorkPlanSettings) {
@@ -32,6 +32,17 @@ final class QuotaWorkPlanMenuToggleView: NSView {
             : AppLocalization.localized(en: "Color by live pace", zh: "按实时进度着色")
         modeSwitch.isOn = workPlan.isEnabled
         setAccessibilityLabel("\(titleLabel.stringValue), \(detailLabel.stringValue)")
+    }
+
+    func resizeToMenuWidth(_ menuWidth: CGFloat) {
+        let targetWidth = max(Self.minimumWidth, ceil(menuWidth))
+        guard abs(frame.width - targetWidth) > 0.5 else {
+            return
+        }
+
+        frame.size.width = targetWidth
+        invalidateIntrinsicContentSize()
+        needsLayout = true
     }
 
     override func mouseUp(with event: NSEvent) {
