@@ -26,6 +26,7 @@ final class ProfileStore {
     let currentConfigURL: URL
     let sessionsRootURL: URL
     let archivedSessionsRootURL: URL
+    let stateDatabaseLocations: [CodexStateDatabaseLocation]
     let stateDatabaseURL: URL
     let stateDatabaseWALURL: URL
     let stateDatabaseSHMURL: URL
@@ -73,10 +74,12 @@ final class ProfileStore {
             .appendingPathComponent("config.toml", isDirectory: false)
         sessionsRootURL = resolvedCodexHomeURL.appendingPathComponent("sessions", isDirectory: true)
         archivedSessionsRootURL = resolvedCodexHomeURL.appendingPathComponent("archived_sessions", isDirectory: true)
-        let stateDatabaseLocation = CodexStateDatabaseLocator.locate(
+        let stateDatabaseLocations = CodexStateDatabaseLocator.locateAll(
             codexHomeURL: resolvedCodexHomeURL,
             fileManager: fileManager
         )
+        self.stateDatabaseLocations = stateDatabaseLocations
+        let stateDatabaseLocation = stateDatabaseLocations[0]
         stateDatabaseURL = stateDatabaseLocation.databaseURL
         stateDatabaseWALURL = stateDatabaseLocation.walURL
         stateDatabaseSHMURL = stateDatabaseLocation.shmURL
@@ -171,14 +174,11 @@ final class ProfileStore {
             settingsURL,
             sessionManagerUIConfigURL,
             accountsIndexURL,
-            stateDatabaseURL,
-            stateDatabaseWALURL,
-            stateDatabaseSHMURL,
             sessionIndexURL,
             sessionManagerDatabaseURL,
             sessionManagerDatabaseWALURL,
             sessionManagerDatabaseSHMURL,
-        ] + additionalFiles
+        ] + stateDatabaseFileURLs + additionalFiles
     }
 
     func runtimeSwitchFileURLs(additionalFiles: [URL] = []) -> [URL] {
@@ -188,11 +188,8 @@ final class ProfileStore {
             settingsURL,
             sessionManagerUIConfigURL,
             accountsIndexURL,
-            stateDatabaseURL,
-            stateDatabaseWALURL,
-            stateDatabaseSHMURL,
             sessionIndexURL,
-        ] + additionalFiles
+        ] + stateDatabaseFileURLs + additionalFiles
     }
 
     func accountMutationFileURLs(additionalFiles: [URL] = []) -> [URL] {
@@ -213,5 +210,15 @@ final class ProfileStore {
             withIntermediateDirectories: true,
             attributes: nil
         )
+    }
+
+    private var stateDatabaseFileURLs: [URL] {
+        stateDatabaseLocations.flatMap { location in
+            [
+                location.databaseURL,
+                location.walURL,
+                location.shmURL,
+            ]
+        }
     }
 }

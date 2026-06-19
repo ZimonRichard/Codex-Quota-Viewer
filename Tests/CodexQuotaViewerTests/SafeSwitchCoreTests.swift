@@ -560,7 +560,7 @@ func rolloutProviderSynchronizerRewritesSessionMetaAcrossRoots() throws {
     }
 
     @Test
-    func rolloutProviderSynchronizerAdvancesFileModificationTimeWhenRewritingProvider() throws {
+    func rolloutProviderSynchronizerPreservesFileModificationTimeWhenRewritingProvider() throws {
         let harness = try makeHarness()
         let sessionsRoot = harness.codexHomeURL.appendingPathComponent("sessions", isDirectory: true)
         let rolloutURL = try writeRollout(
@@ -587,7 +587,7 @@ func rolloutProviderSynchronizerRewritesSessionMetaAcrossRoots() throws {
 
         #expect(result.updatedFiles.map { $0.standardizedFileURL.path } == [rolloutURL.standardizedFileURL.path])
         #expect(try synchronizer.sessionMetaProvider(in: rolloutURL) == "openai")
-        #expect(afterModificationDate > beforeModificationDate)
+        #expect(afterModificationDate == beforeModificationDate)
     }
 
 @Test
@@ -917,6 +917,72 @@ func switchOrchestratorPreservesUserVisibleThreadTitleAcrossCodexClose() async t
 
 @MainActor
 @Test
+func switchOrchestratorRelabelsCanonicalAndLegacyStateDatabases() async throws {
+    let harness = try makeHarness()
+    try seedCurrentRuntime(in: harness, provider: "legacy")
+    let canonicalDatabaseURL = harness.codexHomeURL
+        .appendingPathComponent("sqlite", isDirectory: true)
+        .appendingPathComponent("state_5.sqlite", isDirectory: false)
+    let legacyDatabaseURL = harness.codexHomeURL
+        .appendingPathComponent("state_5.sqlite", isDirectory: false)
+    try seedThreadStateDatabase(
+        canonicalDatabaseURL,
+        id: "thread-dual-state",
+        title: "Dual state",
+        firstUserMessage: "Dual state",
+        modelProvider: "legacy"
+    )
+    try seedThreadStateDatabase(
+        legacyDatabaseURL,
+        id: "thread-dual-state",
+        title: "Dual state",
+        firstUserMessage: "Dual state",
+        modelProvider: "custom"
+    )
+    _ = try writeRollout(
+        under: harness.codexHomeURL.appendingPathComponent("sessions", isDirectory: true),
+        id: "switch-dual-state",
+        provider: "legacy"
+    )
+
+    let repairer = RepairerSpy()
+    let desktop = DesktopControllerSpy(isRunning: true)
+    let orchestrator = makeOrchestrator(
+        harness: harness,
+        repairer: repairer,
+        desktop: desktop
+    )
+    let target = ProviderProfile(
+        id: "target-openai",
+        displayName: "Target OpenAI",
+        source: .vault,
+        runtimeMaterial: ProfileRuntimeMaterial(
+            authData: Data("{\"auth_mode\":\"chatgpt\"}".utf8),
+            configData: Data("model_provider = \"openai\"\nmodel = \"gpt-5.4\"\n".utf8)
+        ),
+        authMode: .chatgpt,
+        providerID: "openai",
+        providerDisplayName: "OpenAI",
+        baseURLHost: nil,
+        model: "gpt-5.4",
+        snapshot: nil,
+        healthStatus: .healthy,
+        errorMessage: nil,
+        isCurrent: false
+    )
+
+    let result = try await orchestrator.perform(targetProfile: target)
+
+    #expect(try readThreadProvider(canonicalDatabaseURL, id: "thread-dual-state") == "openai")
+    #expect(try readThreadProvider(legacyDatabaseURL, id: "thread-dual-state") == "openai")
+    #expect(try readThreadHasUserEvent(canonicalDatabaseURL, id: "thread-dual-state") == "1")
+    #expect(try readThreadHasUserEvent(legacyDatabaseURL, id: "thread-dual-state") == "1")
+    #expect(result.restorePoint.files.contains { $0.originalPath == canonicalDatabaseURL.path })
+    #expect(result.restorePoint.files.contains { $0.originalPath == legacyDatabaseURL.path })
+}
+
+@MainActor
+@Test
 func rollbackManagerRestoresLatestRestorePointAndReopensCodexWhenNeeded() async throws {
         let harness = try makeHarness()
         let authURL = harness.codexHomeURL.appendingPathComponent("auth.json")
@@ -1097,15 +1163,17 @@ private func seedThreadStateDatabase(
           title text not null,
           first_user_message text,
           updated_at integer,
-          model_provider text
+          model_provider text,
+          has_user_event integer not null default 0
         );
-        insert or replace into threads (id, title, first_user_message, updated_at, model_provider)
+        insert or replace into threads (id, title, first_user_message, updated_at, model_provider, has_user_event)
         values (
           \(sqlLiteral(id)),
           \(sqlLiteral(title)),
           \(sqlLiteral(firstUserMessage)),
           1780876860,
-          \(sqlLiteral(modelProvider))
+          \(sqlLiteral(modelProvider)),
+          0
         );
         """
     )
@@ -1144,6 +1212,22 @@ private func readThreadUpdatedAt(_ databaseURL: URL, id: String) throws -> Strin
     try runSQLite(
         databaseURL,
         sql: "select updated_at from threads where id = \(sqlLiteral(id));"
+    )
+    .trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+private func readThreadProvider(_ databaseURL: URL, id: String) throws -> String {
+    try runSQLite(
+        databaseURL,
+        sql: "select model_provider from threads where id = \(sqlLiteral(id));"
+    )
+    .trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+private func readThreadHasUserEvent(_ databaseURL: URL, id: String) throws -> String {
+    try runSQLite(
+        databaseURL,
+        sql: "select has_user_event from threads where id = \(sqlLiteral(id));"
     )
     .trimmingCharacters(in: .whitespacesAndNewlines)
 }

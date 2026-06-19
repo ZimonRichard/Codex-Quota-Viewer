@@ -24,7 +24,7 @@ func chatGPTProviderModeAuthPreservesChatGPTTokensAndClearsAPIKey() throws {
 }
 
 @Test
-func chatGPTProviderModeConfigUsesTutorialOpenAIProviderShape() throws {
+func chatGPTProviderModeConfigUsesCustomProviderShape() throws {
     let record = makeChatGPTProviderModeAPIRecord(
         displayName: "Third Party",
         apiKey: "sk-third-party",
@@ -35,10 +35,10 @@ func chatGPTProviderModeConfigUsesTutorialOpenAIProviderShape() throws {
     let configData = try chatGPTProviderModeConfigData(from: record)
     let text = try configData.utf8String()
 
-    #expect(text.contains("model_provider = \"OpenAI\""))
+    #expect(text.contains("model_provider = \"custom\""))
     #expect(text.contains("model = \"gpt-5.4\""))
-    #expect(text.contains("[model_providers.OpenAI]"))
-    #expect(text.contains("name = \"OpenAI\""))
+    #expect(text.contains("[model_providers.custom]"))
+    #expect(text.contains("name = \"custom\""))
     #expect(text.contains("base_url = \"https://proxy.example.com/v1\""))
     #expect(text.contains("wire_api = \"responses\""))
     #expect(text.contains("experimental_bearer_token = \"sk-third-party\""))
@@ -108,7 +108,7 @@ func chatGPTProviderModeManagerEntersWithBackupAndRestoresOnExit() async throws 
 
     let enteredConfig = try Data(contentsOf: store.currentConfigURL).utf8String()
     #expect(enteredConfig.contains("personality = \"pragmatic\""))
-    #expect(enteredConfig.contains("model_provider = \"OpenAI\""))
+    #expect(enteredConfig.contains("model_provider = \"custom\""))
     #expect(enteredConfig.contains("experimental_bearer_token = \"sk-third-party\""))
 
     let exitResult = try await manager.exit()
@@ -270,7 +270,7 @@ func chatGPTProviderModeEnterSyncsRolloutsAndRepairsThreadProviderMetadata() asy
 
     #expect(result.updatedRolloutCount == 1)
     #expect(repairer.invocationCount == 1)
-    #expect(try readProviderModeRolloutProvider(from: rolloutURL) == "OpenAI")
+    #expect(try readProviderModeRolloutProvider(from: rolloutURL) == "custom")
     #expect(result.restorePoint.files.contains { $0.originalPath == rolloutURL.standardizedFileURL.path } == false)
 }
 
@@ -310,7 +310,7 @@ func chatGPTProviderModeExitRestoresRolloutProviderMetadata() async throws {
     )
 
     _ = try await manager.enter(providerRecord: record)
-    #expect(try readProviderModeRolloutProvider(from: rolloutURL) == "OpenAI")
+    #expect(try readProviderModeRolloutProvider(from: rolloutURL) == "custom")
 
     _ = try await manager.exit()
 
@@ -350,7 +350,7 @@ func activeChatGPTProviderModeUsesRuntimeConfigAsExpectedThreadProvider() {
             currentProfile: profile,
             chatGPTProviderModeState: modeState,
             currentConfigData: runtime.configData
-        ) == "OpenAI"
+        ) == "custom"
     )
 }
 

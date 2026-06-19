@@ -33,14 +33,22 @@ export type CodexThreadUpsert = Omit<CodexThreadRecord, "hasUserEvent"> & {
   hasUserEvent?: boolean;
 };
 
+export type CodexThreadUpsertResult = "created" | "updated" | "unchanged" | "skipped";
+
 export class CodexThreadStateRepository {
   private readonly db: Database.Database | null;
   private readonly columns: Set<string>;
 
-  constructor(codexHome: string) {
-    const databasePath = resolveStateDatabasePath(codexHome);
+  constructor(codexHome: string, options: { databasePath?: string | null } = {}) {
+    const databasePath = options.databasePath ?? resolveStateDatabasePath(codexHome);
 
     if (!databasePath) {
+      this.db = null;
+      this.columns = new Set();
+      return;
+    }
+
+    if (!existsSync(databasePath)) {
       this.db = null;
       this.columns = new Set();
       return;
@@ -67,6 +75,10 @@ export class CodexThreadStateRepository {
 
     this.db = db;
     this.columns = readTableColumns(db, "threads");
+  }
+
+  get available() {
+    return this.db !== null;
   }
 
   listThreads() {
@@ -107,7 +119,7 @@ export class CodexThreadStateRepository {
     return row ? mapThreadRow(row) : null;
   }
 
-  upsertThread(input: CodexThreadUpsert) {
+  upsertThread(input: CodexThreadUpsert): CodexThreadUpsertResult {
     if (!this.db) {
       return "skipped" as const;
     }
@@ -166,6 +178,10 @@ export class CodexThreadStateRepository {
     return result.changes > 0;
   }
 
+  close() {
+    this.db?.close();
+  }
+
   private selectColumns() {
     return [
       "id",
@@ -198,6 +214,92 @@ export class CodexThreadStateRepository {
     return this.columns.has(column)
       ? `${column} as ${alias}`
       : `${fallback} as ${alias}`;
+  }
+}
+
+export class CodexThreadStateRepositorySet {
+  private readonly codexHome: string;
+  private repositories: CodexThreadStateRepository[];
+
+  constructor(codexHome: string) {
+    this.codexHome = codexHome;
+    this.repositories = [];
+    this.refresh();
+  }
+
+  refresh() {
+    for (const repository of this.repositories) {
+      repository.close();
+    }
+
+    this.repositories = resolveStateDatabasePaths(this.codexHome)
+      .map((databasePath) => new CodexThreadStateRepository(this.codexHome, { databasePath }))
+      .filter((repository) => repository.available);
+  }
+
+  listThreads() {
+    const threadsById = new Map<string, CodexThreadRecord>();
+
+    for (const repository of this.repositories) {
+      for (const thread of repository.listThreads()) {
+        if (!threadsById.has(thread.id)) {
+          threadsById.set(thread.id, thread);
+        }
+      }
+    }
+
+    return [...threadsById.values()].sort((left, right) => {
+      if (left.updatedAt !== right.updatedAt) {
+        return right.updatedAt - left.updatedAt;
+      }
+      return left.id.localeCompare(right.id);
+    });
+  }
+
+  getThread(threadId: string) {
+    for (const repository of this.repositories) {
+      const thread = repository.getThread(threadId);
+
+      if (thread) {
+        return thread;
+      }
+    }
+
+    return null;
+  }
+
+  upsertThread(input: CodexThreadUpsert): CodexThreadUpsertResult {
+    let aggregate: CodexThreadUpsertResult = "skipped";
+
+    for (const repository of this.repositories) {
+      const result = repository.upsertThread(input);
+
+      if (result === "updated") {
+        aggregate = "updated";
+        continue;
+      }
+
+      if (result === "created" && aggregate !== "updated") {
+        aggregate = "created";
+        continue;
+      }
+
+      if (result === "unchanged" && aggregate === "skipped") {
+        aggregate = "unchanged";
+      }
+    }
+
+    return aggregate;
+  }
+
+  deleteThread(threadId: string) {
+    let removed = false;
+
+    for (const repository of this.repositories) {
+      removed = repository.deleteThread(threadId) || removed;
+    }
+
+    return removed;
   }
 }
 
@@ -358,26 +460,33 @@ function normalizeThreadSource(value: string | null | undefined) {
 }
 
 export function resolveStateDatabasePath(codexHome: string) {
+  return resolveStateDatabasePaths(codexHome)[0] ?? null;
+}
+
+export function resolveStateDatabasePaths(codexHome: string) {
   const sqliteDirectory = path.join(codexHome, "sqlite");
   const sqliteCandidates = listStateDatabaseCandidates(sqliteDirectory);
+  const paths: string[] = [];
 
-  if (sqliteCandidates.length > 0) {
-    return sqliteCandidates[0];
-  }
+  const sqliteCandidate = sqliteCandidates[0];
 
-  const sqliteStateDb = path.join(sqliteDirectory, "state.db");
-
-  if (existsSync(sqliteStateDb)) {
-    return sqliteStateDb;
+  if (sqliteCandidate) {
+    paths.push(sqliteCandidate);
+  } else {
+    const sqliteStateDb = path.join(sqliteDirectory, "state.db");
+    if (existsSync(sqliteStateDb)) {
+      paths.push(sqliteStateDb);
+    }
   }
 
   const directCandidates = listStateDatabaseCandidates(codexHome);
+  const directCandidate = directCandidates[0];
 
-  if (directCandidates.length > 0) {
-    return directCandidates[0];
+  if (directCandidate) {
+    paths.push(directCandidate);
   }
 
-  return null;
+  return deduplicatePaths(paths);
 }
 
 function listStateDatabaseCandidates(codexHome: string) {
@@ -397,4 +506,22 @@ function listStateDatabaseCandidates(codexHome: string) {
 function extractStateVersion(fileName: string) {
   const match = fileName.match(/^state_(\d+)\.sqlite$/);
   return match ? Number(match[1]) : -1;
+}
+
+function deduplicatePaths(paths: string[]) {
+  const seen = new Set<string>();
+  const result: string[] = [];
+
+  for (const candidate of paths) {
+    const normalized = path.resolve(candidate);
+
+    if (seen.has(normalized)) {
+      continue;
+    }
+
+    seen.add(normalized);
+    result.push(candidate);
+  }
+
+  return result;
 }

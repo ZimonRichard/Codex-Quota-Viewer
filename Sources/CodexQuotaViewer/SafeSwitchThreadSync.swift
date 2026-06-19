@@ -373,6 +373,9 @@ final class RolloutProviderSynchronizer {
         if let creationDate = originalAttributes?[.creationDate] {
             preservedAttributes[.creationDate] = creationDate
         }
+        if let modificationDate = originalAttributes?[.modificationDate] {
+            preservedAttributes[.modificationDate] = modificationDate
+        }
         if !preservedAttributes.isEmpty {
             try fileManager.setAttributes(preservedAttributes, ofItemAtPath: fileURL.path)
         }
@@ -429,8 +432,16 @@ struct LocalThreadProviderRelabeler {
         let sql = """
         BEGIN IMMEDIATE;
         UPDATE threads
-        SET model_provider = '\(escapedProvider)'
-        WHERE COALESCE(model_provider, '') <> '\(escapedProvider)';
+        SET model_provider = '\(escapedProvider)',
+            has_user_event = CASE
+                WHEN COALESCE(TRIM(first_user_message), '') <> '' THEN 1
+                ELSE has_user_event
+            END
+        WHERE COALESCE(model_provider, '') <> '\(escapedProvider)'
+           OR (
+                COALESCE(TRIM(first_user_message), '') <> ''
+                AND COALESCE(has_user_event, 0) <> 1
+           );
         SELECT changes();
         COMMIT;
         """
@@ -495,19 +506,17 @@ final class LocalThreadSyncInspector {
         )) ?? []
 
         let threadProviders: [ProviderCount]
-        if FileManager.default.fileExists(atPath: store.stateDatabaseURL.path) {
-            do {
-                threadProviders = try stateThreadProviderCounts(databaseURL: store.stateDatabaseURL)
-            } catch {
-                return .unavailable(
-                    AppLocalization.localized(
-                        en: "State DB could not be read.",
-                        zh: "无法读取状态数据库。"
-                    )
+        do {
+            threadProviders = try stateThreadProviderCounts(
+                databaseURLs: store.stateDatabaseLocations.map(\.databaseURL)
+            )
+        } catch {
+            return .unavailable(
+                AppLocalization.localized(
+                    en: "State DB could not be read.",
+                    zh: "无法读取状态数据库。"
                 )
-            }
-        } else {
-            threadProviders = []
+            )
         }
 
         if rolloutProviders.isEmpty, threadProviders.isEmpty {
@@ -548,6 +557,29 @@ final class LocalThreadSyncInspector {
         }
 
         return .healthy(expectedProvider: expected)
+    }
+
+    private func stateThreadProviderCounts(databaseURLs: [URL]) throws -> [ProviderCount] {
+        var aggregateCounts: [String: Int] = [:]
+
+        for databaseURL in databaseURLs {
+            guard FileManager.default.fileExists(atPath: databaseURL.path) else {
+                continue
+            }
+
+            for providerCount in try stateThreadProviderCounts(databaseURL: databaseURL) {
+                aggregateCounts[providerCount.providerID, default: 0] += providerCount.count
+            }
+        }
+
+        return aggregateCounts
+            .map { ProviderCount(providerID: $0.key, count: $0.value) }
+            .sorted {
+                if $0.count == $1.count {
+                    return $0.providerID < $1.providerID
+                }
+                return $0.count > $1.count
+            }
     }
 
     private func stateThreadProviderCounts(databaseURL: URL) throws -> [ProviderCount] {

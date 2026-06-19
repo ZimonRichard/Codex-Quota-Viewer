@@ -11,20 +11,60 @@ enum CodexStateDatabaseLocator {
         codexHomeURL: URL,
         fileManager: FileManager = .default
     ) -> CodexStateDatabaseLocation {
+        locateAll(codexHomeURL: codexHomeURL, fileManager: fileManager)[0]
+    }
+
+    static func locateAll(
+        codexHomeURL: URL,
+        fileManager: FileManager = .default
+    ) -> [CodexStateDatabaseLocation] {
         let standardizedCodexHomeURL = codexHomeURL.standardizedFileURL
         let sqliteDirectoryURL = standardizedCodexHomeURL.appendingPathComponent("sqlite", isDirectory: true)
         let sqliteStateDBURL = sqliteDirectoryURL.appendingPathComponent("state.db", isDirectory: false)
-        let databaseURL =
-            newestExistingStateDatabase(in: sqliteDirectoryURL, fileManager: fileManager)
-            ?? (fileManager.fileExists(atPath: sqliteStateDBURL.path) ? sqliteStateDBURL : nil)
-            ?? newestExistingStateDatabase(in: standardizedCodexHomeURL, fileManager: fileManager)
-            ?? sqliteDirectoryURL.appendingPathComponent("state_5.sqlite", isDirectory: false)
+        var databaseURLs: [URL] = []
 
+        if let newestSQLiteDatabaseURL = newestExistingStateDatabase(in: sqliteDirectoryURL, fileManager: fileManager) {
+            databaseURLs.append(newestSQLiteDatabaseURL)
+        } else if fileManager.fileExists(atPath: sqliteStateDBURL.path) {
+            databaseURLs.append(sqliteStateDBURL.standardizedFileURL)
+        }
+
+        if let legacyDatabaseURL = newestExistingStateDatabase(in: standardizedCodexHomeURL, fileManager: fileManager) {
+            databaseURLs.append(legacyDatabaseURL)
+        }
+
+        if databaseURLs.isEmpty {
+            databaseURLs.append(
+                sqliteDirectoryURL.appendingPathComponent("state_5.sqlite", isDirectory: false)
+                    .standardizedFileURL
+            )
+        }
+
+        return deduplicated(databaseURLs).map(location(for:))
+    }
+
+    private static func location(for databaseURL: URL) -> CodexStateDatabaseLocation {
+        let standardizedDatabaseURL = databaseURL.standardizedFileURL
         return CodexStateDatabaseLocation(
-            databaseURL: databaseURL,
-            walURL: URL(fileURLWithPath: databaseURL.path + "-wal", isDirectory: false),
-            shmURL: URL(fileURLWithPath: databaseURL.path + "-shm", isDirectory: false)
+            databaseURL: standardizedDatabaseURL,
+            walURL: URL(fileURLWithPath: standardizedDatabaseURL.path + "-wal", isDirectory: false),
+            shmURL: URL(fileURLWithPath: standardizedDatabaseURL.path + "-shm", isDirectory: false)
         )
+    }
+
+    private static func deduplicated(_ urls: [URL]) -> [URL] {
+        var seen = Set<String>()
+        var result: [URL] = []
+
+        for url in urls {
+            let path = url.standardizedFileURL.path
+            guard seen.insert(path).inserted else {
+                continue
+            }
+            result.append(url.standardizedFileURL)
+        }
+
+        return result
     }
 
     private static func newestExistingStateDatabase(

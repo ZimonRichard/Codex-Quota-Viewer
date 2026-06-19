@@ -4,7 +4,10 @@ import path from "node:path";
 
 import { afterEach, describe, expect, test } from "vitest";
 
-import { resolveStateDatabasePath } from "../../src/server/services/codex-thread-state-repository";
+import {
+  resolveStateDatabasePath,
+  resolveStateDatabasePaths,
+} from "../../src/server/services/codex-thread-state-repository";
 
 describe("resolveStateDatabasePath", () => {
   let roots: string[] = [];
@@ -25,6 +28,7 @@ describe("resolveStateDatabasePath", () => {
     await writeFile(sqlitePath, "");
 
     expect(resolveStateDatabasePath(codexHome)).toBe(sqlitePath);
+    expect(resolveStateDatabasePaths(codexHome)).toEqual([sqlitePath, legacyPath]);
   });
 
   test("falls back to the legacy root database when sqlite state is missing", async () => {
@@ -34,6 +38,7 @@ describe("resolveStateDatabasePath", () => {
     await writeFile(legacyPath, "");
 
     expect(resolveStateDatabasePath(codexHome)).toBe(legacyPath);
+    expect(resolveStateDatabasePaths(codexHome)).toEqual([legacyPath]);
   });
 
   test("prefers sqlite state.db over a stale legacy root database", async () => {
@@ -46,6 +51,10 @@ describe("resolveStateDatabasePath", () => {
     await writeFile(sqlitePath, "");
 
     expect(resolveStateDatabasePath(codexHome)).toBe(sqlitePath);
+    expect(resolveStateDatabasePaths(codexHome)).toEqual([
+      sqlitePath,
+      path.join(codexHome, "state_5.sqlite"),
+    ]);
   });
 
   test("chooses the highest state version within the selected location", async () => {

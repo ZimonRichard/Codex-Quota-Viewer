@@ -9,7 +9,7 @@ import {
   type CodexSessionIndexEntry,
 } from "./codex-session-index-repository";
 import {
-  CodexThreadStateRepository,
+  CodexThreadStateRepositorySet,
   type CodexThreadRecord,
   type CodexThreadUpsert,
 } from "./codex-thread-state-repository";
@@ -20,15 +20,16 @@ const DEFAULT_SANDBOX_POLICY = "workspace-write";
 const DEFAULT_APPROVAL_MODE = "default";
 
 export class CodexOfficialThreadBridge {
-  private readonly threads: CodexThreadStateRepository;
+  private readonly threads: CodexThreadStateRepositorySet;
   private readonly sessionIndex: CodexSessionIndexRepository;
 
   constructor(codexHome: string) {
-    this.threads = new CodexThreadStateRepository(codexHome);
+    this.threads = new CodexThreadStateRepositorySet(codexHome);
     this.sessionIndex = new CodexSessionIndexRepository(codexHome);
   }
 
   async inspectSession(record: SessionRecord): Promise<SessionOfficialState> {
+    this.threads.refresh();
     const thread = this.threads.getThread(record.id);
     const indexEntry = await this.sessionIndex.getEntry(record.id);
     const desired = buildDesiredProjection(record, thread, indexEntry);
@@ -75,6 +76,7 @@ export class CodexOfficialThreadBridge {
       cleanupBroken?: boolean;
     } = {},
   ): Promise<OfficialRepairStats> {
+    this.threads.refresh();
     const selectedIds = new Set(options.sessionIds ?? records.map((record) => record.id));
     const selectedRecords = records.filter((record) => selectedIds.has(record.id));
     const sessionIndexMap = new Map(
@@ -131,6 +133,7 @@ export class CodexOfficialThreadBridge {
   }
 
   async removeSession(sessionId: string) {
+    this.threads.refresh();
     const removedThread = this.threads.deleteThread(sessionId);
     const removedIndex = await this.sessionIndex.deleteEntry(sessionId);
 
@@ -180,7 +183,9 @@ export class CodexOfficialThreadBridge {
       model: meta?.model ?? existing?.model ?? null,
       reasoningEffort: meta?.reasoningEffort ?? existing?.reasoningEffort ?? null,
       agentPath: meta?.agentPath ?? existing?.agentPath ?? null,
-      hasUserEvent: existing?.hasUserEvent ?? true,
+      hasUserEvent: record.userPromptExcerpt.trim().length > 0
+        ? true
+        : existing?.hasUserEvent ?? true,
     };
   }
 

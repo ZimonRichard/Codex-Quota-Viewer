@@ -136,10 +136,7 @@ final class SwitchOrchestrator {
                 in: [store.sessionsRootURL, store.archivedSessionsRootURL],
                 targetProvider: latestPreview.targetProviderID
             )
-            _ = try threadProviderRelabeler.relabel(
-                databaseURL: store.stateDatabaseURL,
-                targetProvider: latestPreview.targetProviderID
-            )
+            _ = try relabelThreadStateDatabases(targetProviderID: latestPreview.targetProviderID)
             let repairSummary = try await repairClient.rescanAndRepair()
 
             await quotaChannelInvalidator.invalidateAllReusableChannels()
@@ -261,10 +258,7 @@ final class SwitchOrchestrator {
             in: [store.sessionsRootURL, store.archivedSessionsRootURL],
             targetProvider: providerID
         )
-        _ = try threadProviderRelabeler.relabel(
-            databaseURL: store.stateDatabaseURL,
-            targetProvider: providerID
-        )
+        _ = try relabelThreadStateDatabases(targetProviderID: providerID)
     }
 
     private func currentRuntimeProviderID() throws -> String? {
@@ -296,10 +290,12 @@ final class SwitchOrchestrator {
         reason: String
     ) {
         do {
-            let updatedCount = try threadTitlePreserver.preserveUserVisibleTitles(
-                stateDatabaseURL: store.stateDatabaseURL,
-                candidates: candidates
-            )
+            let updatedCount = try store.stateDatabaseLocations.reduce(0) { partialResult, location in
+                partialResult + (try threadTitlePreserver.preserveUserVisibleTitles(
+                    stateDatabaseURL: location.databaseURL,
+                    candidates: candidates
+                ))
+            }
             if updatedCount > 0 {
                 AppLog.safeSwitch.info(
                     "Preserved user-visible thread titles count=\(updatedCount, privacy: .public) reason=\(reason, privacy: .public)"
@@ -307,6 +303,15 @@ final class SwitchOrchestrator {
             }
         } catch {
             AppLog.safeSwitch.error("Failed to preserve user-visible thread titles reason=\(reason, privacy: .public): \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func relabelThreadStateDatabases(targetProviderID: String) throws -> Int {
+        try store.stateDatabaseLocations.reduce(0) { partialResult, location in
+            partialResult + (try threadProviderRelabeler.relabel(
+                databaseURL: location.databaseURL,
+                targetProvider: targetProviderID
+            ))
         }
     }
 }

@@ -1,6 +1,7 @@
 import Foundation
 
 let chatGPTProviderModeStateFileName = "chatgpt-provider-mode.json"
+let chatGPTProviderModeProviderID = "custom"
 
 func chatGPTProviderModeStateURL(baseURL: URL) -> URL {
     baseURL.appendingPathComponent(chatGPTProviderModeStateFileName, isDirectory: false)
@@ -218,10 +219,7 @@ final class ChatGPTProviderModeManager {
                 in: [store.sessionsRootURL, store.archivedSessionsRootURL],
                 targetProvider: latestPreview.targetProviderID
             )
-            _ = try threadProviderRelabeler.relabel(
-                databaseURL: store.stateDatabaseURL,
-                targetProvider: latestPreview.targetProviderID
-            )
+            _ = try relabelThreadStateDatabases(targetProviderID: latestPreview.targetProviderID)
             let repairSummary = try await repairClient?.rescanAndRepair() ?? emptyOfficialRepairSummary()
 
             await quotaChannelInvalidator.invalidateAllReusableChannels()
@@ -293,7 +291,7 @@ final class ChatGPTProviderModeManager {
         let summary = parseRuntimeConfig(configData)
         guard let providerID = summary.threadProviderID?.trimmingCharacters(in: .whitespacesAndNewlines),
               !providerID.isEmpty else {
-            return "OpenAI"
+            return chatGPTProviderModeProviderID
         }
         return providerID
     }
@@ -314,10 +312,16 @@ final class ChatGPTProviderModeManager {
             in: [store.sessionsRootURL, store.archivedSessionsRootURL],
             targetProvider: providerID
         )
-        _ = try threadProviderRelabeler.relabel(
-            databaseURL: store.stateDatabaseURL,
-            targetProvider: providerID
-        )
+        _ = try relabelThreadStateDatabases(targetProviderID: providerID)
+    }
+
+    private func relabelThreadStateDatabases(targetProviderID: String) throws -> Int {
+        try store.stateDatabaseLocations.reduce(0) { partialResult, location in
+            partialResult + (try threadProviderRelabeler.relabel(
+                databaseURL: location.databaseURL,
+                targetProvider: targetProviderID
+            ))
+        }
     }
 
     private func currentRuntimeProviderID() throws -> String? {
@@ -394,15 +398,15 @@ func synthesizedChatGPTProviderModeConfig(
     let normalizedBaseURL = normalizedOpenAICompatibleProviderModeBaseURL(from: baseURL)
     let normalizedModel = model?.trimmingCharacters(in: .whitespacesAndNewlines)
 
-    var lines = ["model_provider = \"OpenAI\""]
+    var lines = ["model_provider = \"\(chatGPTProviderModeProviderID)\""]
     if let normalizedModel,
        !normalizedModel.isEmpty {
         lines.append("model = \"\(escapedTOMLString(normalizedModel))\"")
     }
 
     lines.append("")
-    lines.append("[model_providers.OpenAI]")
-    lines.append("name = \"OpenAI\"")
+    lines.append("[model_providers.\(chatGPTProviderModeProviderID)]")
+    lines.append("name = \"\(chatGPTProviderModeProviderID)\"")
     lines.append("base_url = \"\(escapedTOMLString(normalizedBaseURL))\"")
     lines.append("wire_api = \"responses\"")
     lines.append("experimental_bearer_token = \"\(escapedTOMLString(apiKey))\"")

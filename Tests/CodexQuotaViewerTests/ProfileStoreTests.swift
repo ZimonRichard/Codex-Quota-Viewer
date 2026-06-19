@@ -82,6 +82,35 @@ func profileStorePrefersNewCodexSQLiteStateDatabaseWhenPresent() throws {
     #expect(store.stateDatabaseURL.path == sqliteStateURL.path)
     #expect(store.stateDatabaseWALURL.path == sqliteStateURL.path + "-wal")
     #expect(store.stateDatabaseSHMURL.path == sqliteStateURL.path + "-shm")
+    #expect(store.stateDatabaseLocations.map(\.databaseURL.path) == [
+        sqliteStateURL.standardizedFileURL.path,
+        harness.codexHomeURL.appendingPathComponent("state_5.sqlite", isDirectory: false)
+            .standardizedFileURL.path,
+    ])
+}
+
+@Test
+func profileStoreDoesNotTrackMissingLegacyRootStateDatabaseWhenSQLiteStateIsPresent() throws {
+    let harness = try makeHarness()
+    let sqliteDirectoryURL = harness.codexHomeURL.appendingPathComponent("sqlite", isDirectory: true)
+    try FileManager.default.createDirectory(at: sqliteDirectoryURL, withIntermediateDirectories: true)
+    let sqliteStateURL = sqliteDirectoryURL.appendingPathComponent("state_5.sqlite", isDirectory: false)
+    let legacyStateURL = harness.codexHomeURL.appendingPathComponent("state_5.sqlite", isDirectory: false)
+    try Data().write(to: sqliteStateURL)
+
+    let store = ProfileStore(
+        baseURL: harness.appSupportURL,
+        currentAuthURL: harness.codexHomeURL.appendingPathComponent("auth.json", isDirectory: false),
+        homeDirectoryOverride: harness.homeURL
+    )
+
+    #expect(FileManager.default.fileExists(atPath: legacyStateURL.path) == false)
+    #expect(store.stateDatabaseLocations.map(\.databaseURL.path) == [
+        sqliteStateURL.standardizedFileURL.path,
+    ])
+    #expect(store.runtimeSwitchFileURLs().contains {
+        $0.path == legacyStateURL.path
+    } == false)
 }
 
 @Test
@@ -98,6 +127,9 @@ func profileStoreFallsBackToLegacyRootStateDatabaseWhenSQLiteStateIsMissing() th
     )
 
     #expect(store.stateDatabaseURL.path == legacyStateURL.path)
+    #expect(store.stateDatabaseLocations.map(\.databaseURL.path) == [
+        legacyStateURL.standardizedFileURL.path,
+    ])
 }
 
 @Test
@@ -120,4 +152,9 @@ func profileStorePrefersSQLiteStateDBOverLegacyRootStateDatabase() throws {
     #expect(store.stateDatabaseURL.path == sqliteStateURL.path)
     #expect(store.stateDatabaseWALURL.path == sqliteStateURL.path + "-wal")
     #expect(store.stateDatabaseSHMURL.path == sqliteStateURL.path + "-shm")
+    #expect(store.stateDatabaseLocations.map(\.databaseURL.path) == [
+        sqliteStateURL.standardizedFileURL.path,
+        harness.codexHomeURL.appendingPathComponent("state_5.sqlite", isDirectory: false)
+            .standardizedFileURL.path,
+    ])
 }

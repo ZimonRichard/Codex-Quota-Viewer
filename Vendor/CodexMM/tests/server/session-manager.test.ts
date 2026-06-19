@@ -1,5 +1,6 @@
 import {
   access,
+  copyFile,
   mkdir,
   readFile,
   realpath,
@@ -595,6 +596,49 @@ describe("SessionManager", () => {
       updated_at: "2026-03-29T12:16:37.087Z",
     });
     expect(detail.officialState.status).toBe("synced");
+  });
+
+  test("repairs existing official threads into canonical and legacy state databases", async () => {
+    await seedSession(harness.codexHome, {
+      id: "session-dual-state-repair",
+      cwd: "/work/dual-state-repair",
+      startedAt: "2026-03-29T12:46:37.087Z",
+      firstUserMessage: "原始首问标题",
+      latestAgentMessage: "旧 state DB 不应该把重启列表带偏。",
+    });
+
+    const sqliteDirectory = path.join(harness.codexHome, "sqlite");
+    const legacyStatePath = path.join(harness.codexHome, "state_5.sqlite");
+    const canonicalStatePath = path.join(sqliteDirectory, "state_5.sqlite");
+
+    await mkdir(sqliteDirectory, { recursive: true });
+    await copyFile(legacyStatePath, canonicalStatePath);
+
+    const legacyStateDb = new Database(legacyStatePath);
+    legacyStateDb
+      .prepare(
+        `
+          update threads
+          set model_provider = 'custom',
+              has_user_event = 0
+          where id = ?
+        `,
+      )
+      .run("session-dual-state-repair");
+    legacyStateDb.close();
+
+    await manager.rescan();
+    const repair = await manager.repairOfficialThreads(["session-dual-state-repair"]);
+
+    expect(repair.stats.updatedThreads).toBe(1);
+    expect(readOfficialThreadProjection(canonicalStatePath, "session-dual-state-repair")).toMatchObject({
+      modelProvider: "openai",
+      hasUserEvent: 1,
+    });
+    expect(readOfficialThreadProjection(legacyStatePath, "session-dual-state-repair")).toMatchObject({
+      modelProvider: "openai",
+      hasUserEvent: 1,
+    });
   });
 
   test("repairs remove broken official thread rows when rollout files are gone", async () => {
@@ -1204,6 +1248,30 @@ function readOfficialThreadTitle(codexHome: string, sessionId: string) {
     .get(sessionId) as { title: string } | undefined;
   db.close();
   return row?.title ?? null;
+}
+
+function readOfficialThreadProjection(databasePath: string, sessionId: string) {
+  const db = new Database(databasePath);
+  const row = db
+    .prepare(
+      `
+        select
+          id,
+          model_provider as modelProvider,
+          has_user_event as hasUserEvent
+        from threads
+        where id = ?
+      `,
+    )
+    .get(sessionId) as
+    | {
+        id: string;
+        modelProvider: string;
+        hasUserEvent: number;
+      }
+    | undefined;
+  db.close();
+  return row ?? null;
 }
 
 async function rewriteFirstUserMessage(filePath: string, nextMessage: string) {
